@@ -49,3 +49,15 @@ Steps to get diff to virtunoid (nelhage-virtunoid-joe.diff):
 
  $ diff -Nurp virtunoid/ nelhage-virtunoid-joe > nelhage-virtunoid-joe.diff
 
+----------------
+Steps to get diff to qemu-kvm (qemu-kvm-joe.diff):
+
+1. Download qemu-kvm_0.14.0+noroms.orig.tar.gz:
+
+ $ https://launchpad.net/ubuntu/+archive/primary/+files/qemu-kvm_0.14.0%2Bnoroms.orig.tar.gz
+
+2. Clean the compiled directory qemu-kvm-0.14.0+noroms/ to remove all the binary files.
+
+3. Diff the two directories:
+
+ $ diff -Nurp qemu-kvm-0.14.0+noroms.orig/ qemu-kvm-0.14.0+noroms/ > qemu-kvm-joe.diff
