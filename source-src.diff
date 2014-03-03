@@ -1,0 +1,147 @@
+--- source-qemu-kvm-0.14.0+noroms.du	2014-03-03 13:24:14.673648276 -0500
++++ src-qemu-kvm-0.14.0+noroms.du	2014-03-03 13:22:53.144621143 -0500
+@@ -30,6 +30,7 @@
+ 8.0K	./bt-vhci.c
+ 8.0K	./buffered_file.c
+ 4.0K	./buffered_file.h
++0	./build-stamp
+ 4.0K	./cache-utils.c
+ 4.0K	./cache-utils.h
+ 24K	./Changelog
+@@ -51,7 +52,7 @@
+ 4.0K	./config-host.h-timestamp
+ 4.0K	./config-host.ld
+ 4.0K	./config-host.mak
+-52K	./config.log
++44K	./config.log
+ 88K	./configure
+ 48K	./console.c
+ 12K	./console.h
+@@ -69,7 +70,7 @@
+ 4.0K	./cursor_left_ptr.xpm
+ 12K	./cutils.c
+ 240K	./darwin-user
+-400K	./debian
++45M	./debian
+ 176K	./default-configs
+ 8.0K	./def-helper.h
+ 4.0K	./device_tree.c
+@@ -85,7 +86,7 @@
+ 8.0K	./envlist.c
+ 4.0K	./envlist.h
+ 12K	./exec-all.h
+-128K	./exec.c
++132K	./exec.c
+ 4.0K	./EXTERNAL_DEPENDENCIES
+ 324K	./fpu
+ 12K	./fsdev
+@@ -94,6 +95,7 @@
+ 48K	./gdb-xml
+ 4.0K	./gen-icount.h
+ 8.0K	./HACKING
++0	./helper.c
+ 40K	./hmp-commands.hx
+ 4.0K	./host-utils.c
+ 8.0K	./host-utils.h
+@@ -103,10 +105,13 @@
+ 7.4M	./hw
+ 160K	./i386-dis.c
+ 8.0K	./i386.ld
++36K	./i386-linux-user
++36K	./i386-softmmu
+ 400K	./ia64-dis.c
+ 8.0K	./ia64intrin.h
+ 12K	./ia64.ld
+ 8.0K	./input.c
++0	./install-stamp
+ 12K	./ioport.c
+ 4.0K	./ioport.h
+ 4.0K	./ioport-user.c
+@@ -155,7 +160,7 @@
+ 12K	./mips.ld
+ 4.0K	./module.c
+ 4.0K	./module.h
+-144K	./monitor.c
++152K	./monitor.c
+ 4.0K	./monitor.h
+ 20K	./nbd.c
+ 4.0K	./nbd.h
+@@ -186,6 +191,7 @@
+ 12K	./qdict.c
+ 4.0K	./qdict.h
+ 92K	./qdict-test-data.txt
++80K	./qemu.1
+ 4.0K	./qemu-aio.h
+ 4.0K	./qemu-barrier.h
+ 68K	./qemu-char.c
+@@ -193,11 +199,14 @@
+ 12K	./qemu-common.h
+ 20K	./qemu-config.c
+ 4.0K	./qemu-config.h
++244K	./qemu-doc.html
+ 80K	./qemu-doc.texi
+ 8.0K	./qemu-error.c
+ 4.0K	./qemu-error.h
++16K	./qemu-img.1
+ 44K	./qemu-img.c
+ 4.0K	./qemu-img-cmds.hx
++4.0K	./qemu-img-cmds.texi
+ 12K	./qemu-img.texi
+ 40K	./qemu-io.c
+ 44K	./qemu-kvm.c
+@@ -207,6 +216,8 @@
+ 8.0K	./qemu-lock.h
+ 4.0K	./qemu-log.h
+ 4.0K	./qemu-malloc.c
++16K	./qemu-monitor.texi
++8.0K	./qemu-nbd.8
+ 16K	./qemu-nbd.c
+ 4.0K	./qemu-nbd.texi
+ 4.0K	./qemu-objects.h
+@@ -214,12 +225,14 @@
+ 8.0K	./qemu-option.h
+ 4.0K	./qemu-options.h
+ 84K	./qemu-options.hx
++60K	./qemu-options.texi
+ 4.0K	./qemu-os-posix.h
+ 4.0K	./qemu-os-win32.h
+ 24K	./qemu-queue.h
+ 4.0K	./qemu.sasl
+ 4.0K	./qemu_socket.h
+ 20K	./qemu-sockets.c
++28K	./qemu-tech.html
+ 24K	./qemu-tech.texi
+ 4.0K	./qemu-thread.c
+ 4.0K	./qemu-thread.h
+@@ -238,7 +251,7 @@
+ 4.0K	./qjson.h
+ 4.0K	./qlist.c
+ 4.0K	./qlist.h
+-40K	./QMP
++76K	./QMP
+ 44K	./qmp-commands.hx
+ 4.0K	./qobject.h
+ 4.0K	./qstring.c
+@@ -285,6 +298,7 @@
+ 4.0K	./targphys.h
+ 824K	./tcg
+ 4.0K	./tcg-runtime.c
++4.0K	./test
+ 656K	./tests
+ 12K	./thunk.c
+ 8.0K	./thunk.h
+@@ -292,7 +306,6 @@
+ 16K	./trace-events
+ 8.0K	./translate-all.c
+ 8.0K	./uboot_image.h
+-236K	./ubuntu.gz
+ 512K	./ui
+ 20K	./usb-bsd.c
+ 48K	./usb-linux.c
+@@ -302,4 +315,5 @@
+ 96K	./vgafont.h
+ 92K	./vl.c
+ 8.0K	./x86_64.ld
+-40K	./x86_64-softmmu
++36K	./x86_64-linux-user
++36K	./x86_64-softmmu
