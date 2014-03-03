@@ -1,0 +1,27 @@
+./block-migration.c:/* jfp save live handler */
+Binary file ./debian/qemu-kvm/usr/bin/qemu matches
+Binary file ./debian/qemu-kvm/usr/bin/qemu-system-x86_64 matches
+./exec.c:/*jfp read page */
+./exec.c:/*jfp cpu_is_empty_page*/
+./exec.c:/* jfp find empty page*/
+./exec.c:/* jfp dump exploit*/
+./exec.c://jfpjfpjfp
+./helper.c:  /*jfp get cr3 */
+./helper.c:  /*jfp alter_state*/
+./hw/mc146818rtc.c:void jfp(){
+./kvm-all.c:    /*jfp*/
+./migration.c:      printf("jfp: fd_put_ready calling iterate\n");
+./migration.c:	  /*jfp debug calling complete*/
+./monitor.c:/*jfp next empty page */
+./monitor.c:/*jfp monitor hook*/
+./savevm.c:			/* commented out jfp */
+./savevm.c:    /* debug jfp enter begin */
+./savevm.c:	/* debug jfp  print id of each save entry*/
+./savevm.c:    /* debug jfp enter iterate*/
+./savevm.c:	/* debug jfp print id of every save entry*/
+./savevm.c:      printf("jfp: iterate returning 1\n");
+./savevm.c:    printf("jfp: iterate returning 0\n");
+./savevm.c:      /* debug jfp enter complete*/
+./savevm.c:	  /* debug commented out jfp */ 
+./target-i386/helper.c:  /*jfp get cr3 */
+./target-i386/helper.c:  /*jfp alter_state*/
