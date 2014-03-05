@@ -1,0 +1,20 @@
+#!/bin/bash
+
+if [ "$#" == "0" ]; then
+	echo "Usage: ./nasm2shell file"
+	exit 1
+fi
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+nasm -fbin -o $1b2s.bin $1
+
+if [ -x $DIR/bin2shell ]; then
+	if [ $? -eq 0 ]; then
+		# convert bin to shell
+		$DIR/bin2shell $1b2s.bin
+		rm `pwd`/$1b2s.bin
+	fi
+else
+	echo "Error: couldn't find bin2shell executable"
+fi

