@@ -26,14 +26,15 @@
 #include <regex>
 #include <list>
 #include <map>
-//using namespace std;
 #include <algorithm> 
 #include <functional> 
 #include <cctype>
 #include <locale>
 
-std::map<std::string, int> relocmap = {{"R_X86_64_32S", 0}, {"R_X86_64_PC32", 1}};
+/* the relocation type, 0 is reserved for no type */
+std::map<std::string, int> relocmap = {{"R_X86_64_32S", 1}, {"R_X86_64_PC32", 2}};
 
+/* use a class to store each line */
 class ASMLine{
   public:
     std::string section; // the section name, such as .text
@@ -48,13 +49,24 @@ class ASMLine{
     std::string relocfunc; // .rodata.str1.1
     unsigned int relocoffset; // -0x4
 
+    /* initial value */
     ASMLine(){
         funcaddr = 0;
         linenum = 0;
         reloctype = 0;
         relocoffset = 0;
     }
-};
+
+    /* reset line except header (section, fucntion, funcaddr) */
+    void clear_content(){
+        linenum = 0;
+        linecode = "";
+        lineopt = "";
+        reloctype = 0;
+        relocfunc = "";
+        relocoffset = 0;
+    }
+}ASMLINE;
 
 /* trim from start */
 static inline std::string &ltrim(std::string &s) {
@@ -74,46 +86,70 @@ static inline std::string &trim(std::string &s) {
 }
 
 /* generate the asm file from object file */
-void obj2asm(std::string input_file, std::string asm_file){
-    std::string systemstr = std::string("objdump --insn-width=16 -dr ") + input_file + std::string(" > ") + asm_file;
+int obj2asm(std::string input_file, std::string asm_file){
+    std::string systemstr = std::string("objdump --insn-width=16 -Dr ") + input_file + std::string(" > ") + asm_file;
     const char *sys_str = systemstr.c_str();
     std::system(sys_str);
+
+    return 0;
 }
 
-/* update the asm file:
- * 1. move the init_module to the beginning
- * 2. add NOP placeholder for RIP restoring
- * 3. calculate the callq offset */
-void update_asm(std::string asm_file){
-    /* read the asm file */
-    std::ifstream in_file;
-    const char *asm_str = asm_file.c_str();
-    in_file.open(asm_str);
+/* convert string to hex */
+int str2hex(std::string str){
+    int hex_int;
+    std::stringstream ss;
+    ss << std::hex << str;
+    ss >> hex_int;
 
+    return hex_int;
+}
+
+/* write the sections map to file */
+int section2shell(std::map<std::string, std::list<ASMLine>> sections, std::string shell_file){
     /* open file for writing */
-    std::string updated_filename = ".obj.dump.updated";
-    const char *updated_str = updated_filename.c_str();
-    std::ofstream updated_file;
-    updated_file.open(updated_str);
+    const char *shell_str = shell_file.c_str();
+    std::ofstream shell_fp;
+    shell_fp.open(shell_str);
 
+    for (std::map<std::string, std::list<ASMLine>>::const_iterator it = sections.begin(); it != sections.end(); ++it){
+        std::cout << it->first << std::endl;
+        for (std::list<ASMLine>::const_iterator ci = sections[it->first].begin(); ci != sections[it->first].end(); ++ci){
+            std::cout << (*ci).linecode << std::endl;
+            shell_fp << (*ci).function << ":" << (*ci).linenum << ":" << (*ci).linecode << ":" << (*ci).lineopt << ":" \
+                     << (*ci).reloctype << ":" << (*ci).relocfunc << ":" << (*ci).relocoffset << std::endl;
+        }
+    }
+
+    shell_fp.close();
+
+    return 0;
+}
+
+//void update_asm(std::string asm_file){
+int asm2section(std::string asm_file, std::map<std::string, std::list<ASMLine>>& sections){
     /* map for the sections */
-    std::map<std::string, std::list<ASMLine>> sections;
+    //std::map<std::string, std::list<ASMLine>> sections;
     std::list<ASMLine> section_lines;
     ASMLine asm_line;
+
+    /* read the asm file */
+    std::ifstream in_file;
+    const char *asm_fp = asm_file.c_str();
+    in_file.open(asm_fp);
 
     /* deal with lines */
     std::string line;
     while (std::getline(in_file, line)){
-        std::cout << line << std::endl;
+        //std::cout << line << std::endl;
 
         /*Disassembly of section .text:*/
         std::regex e1 ("(Disassembly of section )(.*)(:)");
         /*0000000000000000 <printstr>:*/
         std::regex e2 ("([0-9a-f]*)( <)(.*)(>:)");
         /*   3:	48 c7 c2 ce ac 30 81          	mov    $0xffffffff8130acce,%rdx */
-        std::regex e3 ("([ ]*)([0-9a-f]*)(:\t)([0-9a-f ]*)(\t)([a-z0-9]{1,8})(.*)");
+        std::regex e3 ("([ \t]*)([0-9a-f]*)(:[ \t]*)([0-9a-f ]*)([ \t]*)([a-z0-9()]{2,16})(.*)");
         /*  			35: R_X86_64_PC32	printstr-0x4         */
-        std::regex e4 ("([\t]*)([0-9a-f]*)(:[ ])(R_X86_64_(32S|PC32))(\t)([a-z0-9]{1,8})(-0x)([0-9a-f]*)");
+        std::regex e4 ("([ \t]*)([0-9a-f]*)(:[ \t]*)(R_X86_64_(32S|PC32))([ \t]*)([a-z0-9.]{2,16})([-0x]*)([0-9a-f]*)");
 
         std::smatch sm1, sm2, sm3, sm4;    // same as std::match_results<string::const_iterator> sm;
 
@@ -124,6 +160,8 @@ void update_asm(std::string asm_file){
 
         /* section[Disassembly of section ] [.text] [:] */
         if (sm1.size() > 0){
+            std::cout << sm1[1] << sm1[2] << ":" << std::endl;
+
             section_lines.clear(); // clear the list for new section
             if (sections.find(sm1[2]) == sections.end()) {
                 sections.insert(std::pair<std::string, std::list<ASMLine>>(sm1[2], section_lines));
@@ -132,19 +170,17 @@ void update_asm(std::string asm_file){
         }
         /* funcp[0000000000000000] [ <] [printstr] [>:] */
         if (sm2.size() > 0){
-            std::stringstream ss;
-            ss << std::hex << sm2[1];
-            ss >> asm_line.funcaddr;
+            std::cout << sm2[1] << " " << sm2[3] << ":" << std::endl;
 
+            asm_line.funcaddr = str2hex(sm2[1]);
             asm_line.function = sm2[3];
-
         }
         /* normal line[   ] [3] [:	] [48 c7 c2 ce ac 30 81                            ] [	] [mov] */
         if (sm3.size() > 0){
-            std::stringstream ss;
-            ss << std::hex << sm3[2];
-            ss >> asm_line.linenum;
+            //std::cout << sm3[2] << ":" << sm3[4] << ":" << sm3[6] << std::endl;
 
+            asm_line.clear_content();
+            asm_line.linenum = str2hex(sm3[2]);
             std::string codes = sm3[4];
             asm_line.linecode = trim(codes);
             asm_line.lineopt = sm3[6];
@@ -153,32 +189,33 @@ void update_asm(std::string asm_file){
         }
         /* reloc line[			] [35] [: ] [R_X86_64_PC32] [PC32] [	] [printstr] [-0x] [4]  */
         if (sm4.size() > 0){
-            std::stringstream ss;
-            ss << std::hex << sm4[2];
-            ss >> asm_line.linenum;
+            //std::cout << sm4[2] << ":" << sm4[4] << ":" << sm4[7] << ":" << sm4[9] << std::endl;
 
+            asm_line.clear_content();
+            asm_line.linenum = str2hex(sm4[2]);
             asm_line.reloctype = relocmap[sm4[4]];
-            asm_line.relocfunc = sm3[7];
-            ss << std::hex << sm4[9];
-            ss >> asm_line.relocoffset;
+            asm_line.relocfunc = sm4[7];
+            asm_line.relocoffset= str2hex(sm4[9]);
 
             sections[asm_line.section].push_back(asm_line);
         }
-
     }
 
     /* clean up */
     in_file.close();
-    updated_file.close();
-    //std::remove(asm_str);
+    //std::remove(asm_fp);
+    
+    return 0;
 }
 
 /* change asm code to shellcode string*/
-void asm2shell(std::string asm_file, std::string shell_file){
+int asm2shell(std::string asm_file, std::string shell_file){
+    return 0;
 }
 
 /* calculate shellcode length */
-void shell_length(std::string asm_file, std::string shell_file){
+int shell_length(std::string asm_file, std::string shell_file){
+    return 0;
 }
 
 int main(int argc, char *argv[]){
@@ -189,10 +226,17 @@ int main(int argc, char *argv[]){
     }
 
     std::string asm_file = ".obj.dump";
+    std::map<std::string, std::list<ASMLine>> sections;
 
     obj2asm(argv[2], asm_file);
-    update_asm(asm_file);
-    asm2shell(asm_file, argv[4]);
+    asm2section(asm_file, sections);
+
+ /* update the asm file:
+ * 1. move the init_module to the beginning
+ * 2. add 32 NOP as the placeholder for RIP restoring
+ * 3. calculate the callq offset */
+
+    section2shell(sections, argv[4]);
     shell_length(asm_file, argv[4]);
 
     return 0;
