@@ -9,16 +9,29 @@
  * 3. change asm code to shellcode string
  * 4. calculate shellcode length 
  *
+ * --------------------------------------------------------------
  * How to run:
- * $ g++ -std=c++11 -Wall -Wextra -O2 -o obj2shell obj2shell.cc -g
- * $ ./obj2shell -i printfunc.o -o printfunc.o.string 
+ * $ g++ -std=c++11 -Wall -Wextra -O2 -o obj2shell obj2shell.cc
+ * $ ./obj2shell -i ../PrintkModule/printfunc.o -o printfunc.o.string 
+ *
  *
  * Input: 
- * kernel module object file (printfunc.o)
+ * kernel module object file (../PrintkModule/printfunc.o), compiled by:
+ * $ cd ../PrintkModule/Makefile
+ * $ make
  *
  * Output:
  * 1. shellcode string (printfunc.o.string)
- * 2. shellcode length (printfunc.o.length) */
+ * 2. shellcode length (printfunc.o.length)
+ *
+ * ---------------------------------------------------------------
+ * For debugging:
+ * $ g++ -std=c++11 -Wall -Wextra -o obj2shell obj2shell.cc -g -O0
+ * $ valgrind --leak-check=full --track-origins=yes ./obj2shell \
+ *   -i ../PrintkModule/printkfunc.o -o printkfunc.o.string
+ *
+ * temp asm file: .obj.dump
+ * */
 
 #include <iostream>
 #include <fstream>
@@ -41,7 +54,7 @@ class ASMLine{
     //unsigned long long func_addr; // the func addr, such as: 0000000000000090, will trans to hex
     unsigned int line_num; // better to be int, will trans to hexadecimal after calculation
 
-    std::string line_code; // 31 c0                   xor    %eax,%eax
+    std::list<std::string> line_code; // 31 c0                   xor    %eax,%eax
     std::string line_opt; 
 
     unsigned int reloc_type; // 0: R_X86_64_32S
@@ -53,6 +66,7 @@ class ASMLine{
         section_id = 0;
         func_addr = 0;
         line_num = 0;
+        line_code = {};
         reloc_type = 0;
         reloc_offset = 0;
     }
@@ -60,7 +74,7 @@ class ASMLine{
     /* reset line except header (section, fucntion, func_addr) */
     void clear_content(){
         line_num = 0;
-        line_code = "";
+        line_code.clear();
         line_opt = "";
         reloc_type = 0;
         reloc_func = "";
@@ -68,9 +82,6 @@ class ASMLine{
     }
 }ASMLINE;
 
-/* the section map for all the ASM lines */
-std::map<std::string, std::list<ASMLine>> sections;
-std::map<std::string, std::list<ASMLine>>::iterator sections_it;
 /* the relocation type, 0 is reserved for no type */
 std::map<std::string, int> reloc_map = {{"R_X86_64_32S", 1}, {"R_X86_64_PC32", 2}};
 /* record the section address pair, for callq offset calculation */
@@ -78,6 +89,10 @@ std::map<int, std::string> section_map; //{{<section_id>, "<section>"}, ..}
 std::map<int, std::string>::iterator sec_map_it;
 /* record the function address pair, for callq offset calculation */
 std::map<std::string, std::list<int>> func_map; // {{"<function>", [<func_addr>, <section_id>]}, ..}
+std::map<std::string, std::list<int>>::iterator func_map_it;
+/* the section map for all the ASM lines */
+std::map<std::string, std::list<ASMLine>> sections;
+std::map<std::string, std::list<ASMLine>>::iterator sections_it;
 
 /* trim from start */
 static inline std::string &ltrim(std::string &s) {
@@ -98,12 +113,51 @@ static inline std::string &trim(std::string &s) {
 
 /* convert string to hex */
 int str2hex(std::string str){
-    int hex_int;
-    std::stringstream ss;
+    int hex_int = 0;
+    std::stringstream ss("");
     ss << std::hex << str;
     ss >> hex_int;
 
     return hex_int;
+}
+
+/* split string into list */
+int split(const std::string &s, char delim, std::list<std::string> &elems) {
+    std::stringstream ss(s);
+    std::string item;
+    while (std::getline(ss, item, delim)) {
+        elems.push_back(item);
+    }
+
+    return 0;
+}
+
+/* list to string */
+int list2str(std::string &str, std::list<std::string> lst){
+    std::stringstream ss("");
+    std::list<std::string>::const_iterator iterator;
+    for (iterator = lst.begin(); iterator != lst.end(); ++iterator) {
+        ss << *iterator << " ";
+    }
+    str = ss.str();
+
+    return 0;
+}
+
+/* get section code size by section id */
+int section_size(int section_id){
+    /* p section_map: std::map with 5 elements
+    *{[0] = ".init.text", [1] = ".text", [2] = ".rodata.str1.1", [3] = ".exit.text", [4] = ".comment"} */
+    sec_map_it = section_map.find(section_id); // got section name
+
+    /* p sections std::map with 5 elements = 
+    * {[".comment"] = std::list = {[0] = { <asm_line 0> }, [1] = { <asm_line 1> }, ... } 
+    * [".rodata.str1.1"] = std::list = {[0] = { <asm_line 0> }, [1] = { <asm_line 1> }, ... */
+    sections_it = sections.find(sec_map_it->second); // got section content list
+    ASMLine tmp_line = (sections_it->second).back();
+
+    /* 11:   20 4d 72 */
+    return tmp_line.line_num + tmp_line.line_code.size();
 }
 
 /* generate the asm file from object file */
@@ -162,6 +216,9 @@ int asm2section(std::string asm_file){
             if(".init.text" == sm1[2]){
                 section_id = 0;
             }
+            else{
+                section_num++;
+            }
 
             /* insert into section map */
             section_lines.clear(); // clear the list for new section
@@ -169,9 +226,6 @@ int asm2section(std::string asm_file){
                 sections.insert(std::pair<std::string, std::list<ASMLine>>(sm1[2], section_lines));
                 asm_line.section = sm1[2];
                 asm_line.section_id = section_id;
-            }
-            else{
-                section_num++;
             }
 
             /* record the section address pair, for callq offset calculation */
@@ -195,7 +249,7 @@ int asm2section(std::string asm_file){
                 func_map.insert(std::pair<std::string, std::list<int>>(asm_line.function, {asm_line.func_addr, section_id}));
             }
             else{
-                std::cout << "ERROR: duplicated function found!" << std::endl;
+                std::cout << "ERROR: duplicated function found: " << asm_line.function << std::endl;
             }
         }
         /* normal line[   ] [3] [:	] [48 c7 c2 ce ac 30 81                            ] [	] [mov] */
@@ -208,7 +262,7 @@ int asm2section(std::string asm_file){
                 for(int nop_i=0;nop_i<32;nop_i++){
                     asm_line.clear_content();
                     asm_line.line_num = lineno++;
-                    asm_line.line_code = "90";
+                    asm_line.line_code.push_back("90");
                     asm_line.line_opt = "nop";
                     
                     sections[asm_line.section].push_back(asm_line);
@@ -218,23 +272,22 @@ int asm2section(std::string asm_file){
             asm_line.clear_content();
             asm_line.line_num = lineno;
             std::string codes = sm3[4];
-            asm_line.line_code = trim(codes);
+            //std::string trim_codes = trim(codes);
+            split(trim(codes), ' ', asm_line.line_code);
+            //asm_line.line_code = trim(codes);
             asm_line.line_opt = sm3[6];
 
             sections[asm_line.section].push_back(asm_line);
         }
         /* reloc line[			] [35] [: ] [R_X86_64_PC32] [PC32] [	] [printstr] [-] [0x] [4]  */
         if (sm4.size() > 0){
-            //std::cout << sm4[2] << ":" << sm4[4] << ":" << sm4[7] << ":" << sm4[9] << std::endl;
             asm_line.clear_content();
             asm_line.line_num = str2hex(sm4[2]);
             asm_line.reloc_type = reloc_map[sm4[4]];
             asm_line.reloc_func = sm4[7];
-            if (sm4.size() > 7){
-                asm_line.reloc_offset = str2hex(sm4[10]);
-                if ("-" == sm4[8]) {
-                    asm_line.reloc_offset = 0 - asm_line.reloc_offset;
-                }
+            asm_line.reloc_offset = str2hex(sm4[10]);
+            if ("-" == sm4[8]) {
+                asm_line.reloc_offset = 0 - asm_line.reloc_offset;
             }
 
             sections[asm_line.section].push_back(asm_line);
@@ -254,29 +307,56 @@ int asm2section(std::string asm_file){
 /*Calculate relocation offset:
  * 1. find all the sections between target_section and current_section: middle_section
  * 2. calculate the size of middle_section: sizeof(middle_section)
- * 3. offset = sizeof(middle_section) + (line_num) + (target_section - func_addr)
+ * 3. offset = (step 2) + (line_num) + (target_section - (func_addr+reloc_offset))
  *   target_section = func_map[function][1]
  *   func_addr = func_map[function][0] */
-int clac_offset(ASMLine asm_line){
+int calc_offset(ASMLine asm_line){
     int offset = 0;
-    std::list<int> func_list = func_map[asm_line.reloc_func];
 
-    unsigned int target_func_addr = func_list.front();
-    unsigned int target_section = func_list.back();
-
-    int min_id = std::min<unsigned int>(asm_line.section_id, target_section);
-    int max_id = std::max<unsigned int>(asm_line.section_id, target_section);
-    for (int sec=min_id; sec<max_id; sec++) {
-        sec_map_it = section_map.find(sec);
-        sections_it = sections.find(sec_map_it->second);
-        offset += (sections_it->second).size();
+    if(func_map.find(asm_line.reloc_func) == func_map.end()){
+        std::cout << "ERROR: relocation function " << asm_line.reloc_func << " not found!" << std::endl;
+        return -1;
     }
-    offset += asm_line.line_num;
-    sec_map_it = section_map.find(target_section);
-    sections_it = sections.find(sec_map_it->second);
-    offset += (sections_it->second).size() - target_func_addr;
+    else{
+        /* 1. find all the sections between target_section and current_section: middle_section*/
+        /* func_map std::map with 5 elements =
+        * {[".comment"] = std::list = {[0] = 0, [1] = 4}, 
+        *  [".rodata.str1.1"] = std::list = {[0] = 0, [1] = 2}, 
+        *  ["cleanup_module"] = std::list = {[0] = 0, [1] = 3}, 
+        *  ["init_module"] = std::list = {[0] = 0, [1] = 0}, 
+        *  ["printstr"] = std::list = {[0] = 0, [1] = 1}}*/
+        std::list<int> func_list = (func_map.find(asm_line.reloc_func))->second; // find relocation func
+        /* func_list = {[0] = 0, [1] = 2} */
+        unsigned int target_func_addr = func_list.front(); // key: func_addr
+        unsigned int target_section = func_list.back(); // value: section id
+    
+        /*p asm_line
+        *{section = ".init.text", section_id = 0, function = "init_module", func_addr = 0, 
+        * line_num = 4, line_code = empty std::list, line_opt = "", 
+        * reloc_type = 1, reloc_func = ".rodata.str1.1", reloc_offset = 0}*/
+        int min_id = std::min<unsigned int>(asm_line.section_id, target_section);
+        int max_id = std::max<unsigned int>(asm_line.section_id, target_section);
 
-    return offset;
+        /* 2. calculate the size of middle_section: sizeof(middle_section) */
+        for (int sec=min_id+1; sec<max_id; sec++) {
+            offset += section_size(sec);
+        }
+        /* 3. offset = (step 2) + (line_num) + (target_section - (func_addr+reloc_offset)) */
+        /* if target section is above:
+        * offset += (line_num) + (target_section - (func_addr+reloc_offset)) */
+        if (asm_line.section_id > target_section){
+            offset += asm_line.line_num + \
+                (section_size(target_section) - (target_func_addr + asm_line.reloc_offset));
+        }
+        /* if target section is below:
+        * offset += (this_section - line_num) - (func_addr+reloc_offset)) */
+        else{
+            offset += (section_size(asm_line.section_id) - asm_line.line_num) + \
+                (target_func_addr + asm_line.reloc_offset);
+        }
+
+        return offset;
+    }
 }
 
 /* write the sections map to file */
@@ -291,11 +371,13 @@ int section2shell(std::string shell_file){
         std::cout << "Writing " << it->first << "..." << std::endl;
         for (std::list<ASMLine>::const_iterator ci = sections[it->first].begin(); ci != sections[it->first].end(); ++ci){
             if ((*ci).reloc_type != 0){
-                clac_offset(*ci);
+                calc_offset(*ci);
             }
             /*std::cout << (*ci).line_code << std::endl;*/
+            std::string code_str;
+            list2str(code_str, (*ci).line_code);
             shell_fp << (*ci).section << ":" << (*ci).function << ":" \
-                     << (*ci).line_num << ":" << (*ci).line_code << ":" << (*ci).line_opt << ":" \
+                     << (*ci).line_num << ":" << code_str << ":" << (*ci).line_opt << ":" \
                      << (*ci).reloc_type << ":" << (*ci).reloc_func << ":" << (*ci).reloc_offset << std::endl;
         }
     }
