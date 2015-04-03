@@ -43,6 +43,7 @@
 #include <functional> 
 #include <cctype>
 #include <locale>
+#include <iomanip>
 
 /* use a class to store each line */
 class ASMLine{
@@ -286,8 +287,10 @@ int asm2section(std::string asm_file){
             asm_line.reloc_type = reloc_map[sm4[4]];
             asm_line.reloc_func = sm4[7];
             asm_line.reloc_offset = str2hex(sm4[10]);
+            /* ignore the offset -0x4 */
             if ("-" == sm4[8]) {
-                asm_line.reloc_offset = 0 - asm_line.reloc_offset;
+                //asm_line.reloc_offset = 0 - asm_line.reloc_offset;
+                asm_line.reloc_offset = 0;
             }
 
             sections[asm_line.section].push_back(asm_line);
@@ -312,6 +315,7 @@ int asm2section(std::string asm_file){
  *   func_addr = func_map[function][0] */
 int calc_offset(ASMLine asm_line){
     int offset = 0;
+    int offset_sign = 1; // positive
 
     if(func_map.find(asm_line.reloc_func) == func_map.end()){
         std::cout << "ERROR: relocation function " << asm_line.reloc_func << " not found!" << std::endl;
@@ -343,20 +347,48 @@ int calc_offset(ASMLine asm_line){
         }
         /* 3. offset = (step 2) + (line_num) + (target_section - (func_addr+reloc_offset)) */
         /* if target section is above:
-        * offset += (line_num) + (target_section - (func_addr+reloc_offset)) */
+        * offset += (line_num + 4) + (target_section - (func_addr+reloc_offset)) 
+        * 4: address occupies 4 bytes*/
         if (asm_line.section_id > target_section){
-            offset += asm_line.line_num + \
+            offset_sign = -1; // negtive
+            offset += (asm_line.line_num + 4) + \
                 (section_size(target_section) - (target_func_addr + asm_line.reloc_offset));
         }
         /* if target section is below:
-        * offset += (this_section - line_num) - (func_addr+reloc_offset)) */
+        * offset += (this_section - (line_num + 4)) - (func_addr+reloc_offset)) 
+        * 4: address occupies 4 bytes*/
         else{
-            offset += (section_size(asm_line.section_id) - asm_line.line_num) + \
+            offset += (section_size(asm_line.section_id) - (asm_line.line_num + 4)) + \
                 (target_func_addr + asm_line.reloc_offset);
         }
 
-        return offset;
+        return offset_sign * offset;
     }
+}
+
+/* update the callq offset according to calc_offset */
+int update_offset(ASMLine &asm_line, int reloc_offset){
+    /* convert int to hex: -70 = ffffffc9 */
+    std::stringstream stream;
+    stream << std::setfill ('0') << std::setw(8) << std::hex << reloc_offset;
+    std::string hex_offset(stream.str());
+
+    /* write hex back to asm_line */
+    int hex_i = 0;
+    std::list<std::string> &code_list = asm_line.line_code;
+    std::list<std::string>::iterator current;
+    /* go through the list backwards */
+    for ( current = code_list.end(); current != code_list.begin();){   
+        --current; // Unfortunately, you now need this here
+        *current = hex_offset.substr(hex_i, 2); // 2 characters each time
+        hex_i += 2;
+        /* break if done */
+        if(hex_i > 6){
+            break;
+        }
+    }
+
+    return 0;
 }
 
 /* write the sections map to file */
@@ -369,9 +401,11 @@ int section2shell(std::string shell_file){
     std::cout << "#### Writing file " << shell_file << "####" << std::endl;
     for (std::map<std::string, std::list<ASMLine>>::const_iterator it = sections.begin(); it != sections.end(); ++it){
         std::cout << "Writing " << it->first << "..." << std::endl;
-        for (std::list<ASMLine>::const_iterator ci = sections[it->first].begin(); ci != sections[it->first].end(); ++ci){
+        std::list<ASMLine>::iterator ci_prev;
+        std::list<ASMLine>::iterator ci;
+        for (ci = sections[it->first].begin(); ci != sections[it->first].end(); ++ci){
             if ((*ci).reloc_type != 0){
-                calc_offset(*ci);
+                update_offset(*std::prev(ci), calc_offset(*ci));
             }
             /*std::cout << (*ci).line_code << std::endl;*/
             std::string code_str;
