@@ -138,7 +138,7 @@ int list2str(std::string &str, std::list<std::string> lst){
     std::stringstream ss("");
     std::list<std::string>::const_iterator iterator;
     for (iterator = lst.begin(); iterator != lst.end(); ++iterator) {
-        ss << *iterator << " ";
+        ss << "\\x" << *iterator;
     }
     str = ss.str();
 
@@ -168,7 +168,7 @@ int obj2asm(std::string input_file, std::string asm_file){
     const char *sys_str = systemstr.c_str();
     std::system(sys_str);
 
-    //std::cout << "#### Generating ASM code DONE! ####" << std::endl;
+    std::cout << "#### Generating ASM code DONE! ####" << std::endl;
     return 0;
 }
 
@@ -187,7 +187,7 @@ int asm2section(std::string asm_file){
     /* set id for each section, 0 reserved for .init.text*/
     int section_id = -1; // uninitialized value
     int section_num = 1;
-    //std::cout << "#### Reading ASM code into a Map ####" << std::endl;
+    std::cout << "#### Parsing ASM code ####" << std::endl;
     /* deal with lines */
     std::string line;
     while (std::getline(in_file, line)){
@@ -198,7 +198,7 @@ int asm2section(std::string asm_file){
         /*0000000000000000 <printstr>:*/
         std::regex e2 ("([0-9a-f]*)( <)(.*)(>:)");
         /*   3:	48 c7 c2 ce ac 30 81          	mov    $0xffffffff8130acce,%rdx */
-        std::regex e3 ("([ \t]*)([0-9a-f]*)(:[ \t]*)([0-9a-f ]*)([ \t]*)([a-z0-9()]{2,16})(.*)");
+        std::regex e3 ("([ \t]*)([0-9a-f]*)(:[ \t]*)([0-9a-f ]*)([ \t]*)([a-z0-9.()]{2,16})(.*)");
         /*  			35: R_X86_64_PC32	printstr-0x4         */
         std::regex e4 ("([ \t]*)([0-9a-f]*)(:[ \t]*)(R_X86_64_(32S|PC32))([ \t]*)([a-z0-9.]{2,16})([-+]*)([0x]*)([0-9a-f]*)");
 
@@ -298,7 +298,7 @@ int asm2section(std::string asm_file){
     }
 
     //std::cout << "#### Reading file DONE! ####" << std::endl;
-    std::cout << "#### Generating ASM code DONE! ####" << std::endl;
+    std::cout << "#### Parsing ASM code DONE! ####" << std::endl;
 
     /* clean up */
     in_file.close();
@@ -398,32 +398,56 @@ int section2shell(std::string shell_file){
     std::ofstream shell_fp;
     shell_fp.open(shell_str);
 
-    std::cout << "#### Writing file " << shell_file << "####" << std::endl;
-    for (std::map<std::string, std::list<ASMLine>>::const_iterator it = sections.begin(); it != sections.end(); ++it){
-        std::cout << "Writing " << it->first << "..." << std::endl;
-        std::list<ASMLine>::iterator ci_prev;
+    std::cout << "#### Writing shellcode " << shell_file << " ####" << std::endl;
+    shell_fp << "\"" ;
+    for (sec_map_it = section_map.begin(); sec_map_it != section_map.end(); ++sec_map_it){
+        std::cout << "Writing " << sec_map_it->second << "..." << std::endl;
+
         std::list<ASMLine>::iterator ci;
-        for (ci = sections[it->first].begin(); ci != sections[it->first].end(); ++ci){
+
+        /*update the callq offset*/
+        for (ci = sections[sec_map_it->second].begin(); ci != sections[sec_map_it->second].end(); ++ci){
             if ((*ci).reloc_type != 0){
                 update_offset(*std::prev(ci), calc_offset(*ci));
             }
-            /*std::cout << (*ci).line_code << std::endl;*/
+        }
+
+        /*write into shellcode file*/
+        for (ci = sections[sec_map_it->second].begin(); ci != sections[sec_map_it->second].end(); ++ci){
             std::string code_str;
             list2str(code_str, (*ci).line_code);
-            shell_fp << (*ci).section << ":" << (*ci).function << ":" \
-                     << (*ci).line_num << ":" << code_str << ":" << (*ci).line_opt << ":" \
-                     << (*ci).reloc_type << ":" << (*ci).reloc_func << ":" << (*ci).reloc_offset << std::endl;
+            shell_fp << code_str;
         }
     }
+    shell_fp << "\"" << std::endl;
 
-    std::cout << "#### Writing file DONE! ####" << std::endl;
+    std::cout << "#### Writing shellcode file DONE! ####" << std::endl;
     shell_fp.close();
 
     return 0;
 }
 
 /* calculate shellcode length */
-int shell_length(std::string asm_file, std::string shell_file){
+int shell_length(std::string shell_file){
+    int shellcode_length = 0;
+
+    /* open file for writing */
+    std::stringstream stream;
+    stream << shell_file << ".length";
+    std::string stream_str(stream.str());
+
+    const char *shell_len = stream_str.c_str();
+    std::ofstream shell_len_fp;
+    shell_len_fp.open(shell_len);
+
+    std::cout << "#### Writing shellcode length " << shell_file << ".length ####" << std::endl;
+    for (sec_map_it = section_map.begin(); sec_map_it != section_map.end(); ++sec_map_it){
+        shellcode_length += section_size(sec_map_it->first);
+    }
+    shell_len_fp << shellcode_length << std::endl;
+    std::cout << "#### Writing shellcode length DONE! ####" << std::endl;
+    shell_len_fp.close();
+
     return 0;
 }
 
@@ -443,7 +467,7 @@ int main(int argc, char *argv[]){
     obj2asm(argv[2], asm_file);
     asm2section(asm_file);
     section2shell(argv[4]);
-    shell_length(asm_file, argv[4]);
+    shell_length(argv[4]);
 
     return 0;
 }
