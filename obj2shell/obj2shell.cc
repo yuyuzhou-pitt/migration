@@ -11,7 +11,7 @@
  *
  * --------------------------------------------------------------
  * How to run:
- * $ g++ -std=c++11 -Wall -Wextra -O2 -o obj2shell obj2shell.cc
+ * $ g++ -std=c++0x -Wall -Wextra -O2 -o obj2shell obj2shell.cc
  * $ ./obj2shell -i ../PrintkModule/printfunc.o -o printfunc.o.string 
  *
  *
@@ -26,7 +26,7 @@
  *
  * ---------------------------------------------------------------
  * For debugging:
- * $ g++ -std=c++11 -Wall -Wextra -o obj2shell obj2shell.cc -g -O0
+ * $ g++ -std=c++0x -Wall -Wextra -o obj2shell obj2shell.cc -g -O0
  * $ valgrind --leak-check=full --track-origins=yes ./obj2shell \
  *   -i ../PrintkModule/printkfunc.o -o printkfunc.o.string
  *
@@ -34,9 +34,9 @@
  * */
 
 #include <iostream>
+#include <sstream>
 #include <fstream>
 #include <cstdlib>
-#include <regex>
 #include <list>
 #include <map>
 #include <algorithm> 
@@ -113,17 +113,30 @@ static inline std::string &trim(std::string &s) {
 /* convert string to hex */
 int str2hex(std::string str){
     int hex_int = 0;
-    std::stringstream ss("");
+    std::stringstream ss;
     ss << std::hex << str;
     ss >> hex_int;
 
     return hex_int;
 }
 
-/* split string into list */
-int split(const std::string &s, char delim, std::list<std::string> &elems) {
+/* split string into vector */
+int split_list(const std::string &s, char delim, std::list<std::string> &elems) {
     std::stringstream ss(s);
     std::string item;
+    elems.clear();
+    while (std::getline(ss, item, delim)) {
+        elems.push_back(item);
+    }
+
+    return 0;
+}
+
+/* split string into vector */
+int split(const std::string &s, char delim, std::vector<std::string> &elems) {
+    std::stringstream ss(s);
+    std::string item;
+    elems.clear();
     while (std::getline(ss, item, delim)) {
         elems.push_back(item);
     }
@@ -192,29 +205,17 @@ int asm2section(std::string asm_file){
     std::string line;
     while (std::getline(in_file, line)){
         //std::cout << line << std::endl;
+        std::vector<std::string> line_list;
 
         /*Disassembly of section .text:*/
-        std::regex e1 ("(Disassembly of section )(.*)(:)");
-        /*0000000000000000 <printstr>:*/
-        std::regex e2 ("([0-9a-f]*)( <)(.*)(>:)");
-        /*   3:	48 c7 c2 ce ac 30 81          	mov    $0xffffffff8130acce,%rdx */
-        std::regex e3 ("([ \t]*)([0-9a-f]*)(:[ \t]*)([0-9a-f ]*)([ \t]*)([a-z0-9.()]{2,16})(.*)");
-        /*  			35: R_X86_64_PC32	printstr-0x4         */
-        std::regex e4 ("([ \t]*)([0-9a-f]*)(:[ \t]*)(R_X86_64_(32S|PC32))([ \t]*)([a-z0-9.]{2,16})([-+]*)([0x]*)([0-9a-f]*)");
-
-        std::smatch sm1, sm2, sm3, sm4;    // same as std::match_results<string::const_iterator> sm;
-        std::regex_match (line,sm1,e1);
-        std::regex_match (line,sm2,e2);
-        std::regex_match (line,sm3,e3);
-        std::regex_match (line,sm4,e4);
-
-        /* section[Disassembly of section ] [.text] [:] */
-        if (sm1.size() > 0){
-            std::cout << sm1[1] << sm1[2] << std::endl;
+        if (line.find("Disassembly of section") == 0){
+            split(line, ' ', line_list);
+            std::string section_name = line_list.back().substr(0, line_list.back().length() - 1);
+            std::cout << "Disassembly of section " << section_name << std::endl;
 
             /* reserve 0 for .init.text*/
             section_id = section_num;
-            if(".init.text" == sm1[2]){
+            if(".init.text" == section_name){
                 section_id = 0;
             }
             else{
@@ -223,81 +224,120 @@ int asm2section(std::string asm_file){
 
             /* insert into section map */
             section_lines.clear(); // clear the list for new section
-            if (sections.find(sm1[2]) == sections.end()) {
-                sections.insert(std::pair<std::string, std::list<ASMLine>>(sm1[2], section_lines));
-                asm_line.section = sm1[2];
+            if (sections.find(section_name) == sections.end()) {
+                sections.insert(std::pair<std::string, std::list<ASMLine>>(section_name, section_lines));
+                asm_line.section = section_name;
                 asm_line.section_id = section_id;
             }
 
             /* record the section address pair, for callq offset calculation */
             if (section_map.find(section_id) == section_map.end()) {
-                section_map.insert(std::pair<int, std::string>(section_id, sm1[2]));
+                section_map.insert(std::pair<int, std::string>(section_id, section_name));
             }
             else{
                 std::cout << "ERROR: duplicated section found!" << std::endl;
             }
 
         }
-        /* funcp[0000000000000000] [ <] [printstr] [>:] */
-        if (sm2.size() > 0){
-            std::cout << sm2[1] << " " << sm2[3] << std::endl;
+        /*0000000000000000 <printstr>:*/
+        else if (line.find("000") == 0){
+            split(line, ' ', line_list);
+            std::string function_name = line_list.back().substr(1, line_list.back().length() - 3);
+            std::cout << line_list.front() << " " << function_name << std::endl;
 
-            asm_line.func_addr = str2hex(sm2[1]);
-            asm_line.function = sm2[3];
+            asm_line.func_addr = str2hex(line_list.front());
+            asm_line.function = function_name;
 
             /* record the function address pair, for callq offset calculation */
             if (func_map.find(asm_line.function) == func_map.end()) {
-                func_map.insert(std::pair<std::string, std::list<int>>(asm_line.function, {asm_line.func_addr, section_id}));
+                std::list<int> addr_id = {asm_line.func_addr, section_id};
+                func_map.insert(std::pair<std::string, std::list<int>>(asm_line.function, addr_id));
             }
             else{
                 std::cout << "ERROR: duplicated function found: " << asm_line.function << std::endl;
             }
         }
-        /* normal line[   ] [3] [:	] [48 c7 c2 ce ac 30 81                            ] [	] [mov] */
-        if (sm3.size() > 0){
-            //std::cout << sm3[2] << ":" << sm3[4] << ":" << sm3[6] << std::endl;
-            int lineno = str2hex(sm3[2]);
+        /* for lines with codes */
+        else if (line.find("\t") != std::string::npos){
+            split(line, '\t', line_list);
+            std::string first_item = line_list.front();
+            std::string last_item = line_list.back();
 
-            /* insert NOP into init_module for RIP restoring */
-            if("init_module" == asm_line.function && "retq" == sm3[6]){
-                for(int nop_i=0;nop_i<32;nop_i++){
-                    asm_line.clear_content();
-                    asm_line.line_num = lineno++;
-                    asm_line.line_code.push_back("90");
-                    asm_line.line_opt = "nop";
-                    
-                    sections[asm_line.section].push_back(asm_line);
+            /*   76:^I48 c7 c7 00 00 00 00 ^Imov    $0x0,%rdi$ */
+            char delim = ' ';
+            if (first_item.find(":") != std::string::npos){
+                /* extract line num */
+                std::vector<std::string> opt_list;
+                split(last_item, delim, opt_list);
+
+                std::string num_str_full = first_item.substr(0, first_item.length() - 1);
+                std::string num_str = trim(num_str_full);
+                int lineno = str2hex(num_str);
+    
+                /* insert NOP into init_module for RIP restoring */
+                if("init_module" == asm_line.function && opt_list.front() == "retq"){
+                    for(int nop_i=0;nop_i<32;nop_i++){
+                        asm_line.clear_content();
+                        asm_line.line_num = lineno++;
+                        asm_line.line_code.push_back("90");
+                        asm_line.line_opt = "nop";
+                        
+                        sections[asm_line.section].push_back(asm_line);
+                    }
                 }
+
+                /* extract hex codes and instructions */
+                asm_line.clear_content();
+                asm_line.line_num = lineno;
+                std::string codes = line_list[1];
+                split_list(trim(codes), delim, asm_line.line_code);
+                asm_line.line_opt = opt_list.front();
+    
+                /* insert line into sections map */
+                sections[asm_line.section].push_back(asm_line);
             }
+            /* ^I^I^Iafd: R_X86_64_PC32^Igva_to_hva-0x4$ */
+            if (line.find("R_X86_64") != std::string::npos){
+                asm_line.clear_content();
 
-            asm_line.clear_content();
-            asm_line.line_num = lineno;
-            std::string codes = sm3[4];
-            //std::string trim_codes = trim(codes);
-            split(trim(codes), ' ', asm_line.line_code);
-            //asm_line.line_code = trim(codes);
-            asm_line.line_opt = sm3[6];
+                /* get reloc line number */
+                std::vector<std::string> num_type;
+                std::vector<std::string> func_offset;
 
-            sections[asm_line.section].push_back(asm_line);
-        }
-        /* reloc line[			] [35] [: ] [R_X86_64_PC32] [PC32] [	] [printstr] [-] [0x] [4]  */
-        if (sm4.size() > 0){
-            asm_line.clear_content();
-            asm_line.line_num = str2hex(sm4[2]);
-            asm_line.reloc_type = reloc_map[sm4[4]];
-            asm_line.reloc_func = sm4[7];
-            asm_line.reloc_offset = str2hex(sm4[10]);
-            /* ignore the offset -0x4 */
-            if ("-" == sm4[8]) {
-                //asm_line.reloc_offset = 0 - asm_line.reloc_offset;
-                asm_line.reloc_offset = 0;
+                delim = ':';
+                split(line_list[3], delim, num_type);
+                asm_line.line_num = str2hex(num_type.front());
+                asm_line.reloc_type = reloc_map[trim(num_type.back())];
+
+                /* get reloc function and offset */
+                std::string reloc_func;
+                std::string reloc_offset ("0");
+                if(last_item.find("-0x") != std::string::npos){
+                    delim = '-';
+                }
+                else if(last_item.find("+0x") != std::string::npos){
+                    delim = '+';
+                }
+
+                /* extract relocation function and address */
+                split(line_list.back(), delim, func_offset);
+                reloc_func = func_offset.front();
+                reloc_offset = func_offset.back().substr(2);
+
+                asm_line.reloc_func = reloc_func;
+                asm_line.reloc_offset = str2hex(reloc_offset);
+
+                /* ignore the offset -0x4 */
+                if ('-' == delim) {
+                    asm_line.reloc_offset = 0;
+                }
+    
+                /* insert line into sections map */
+                sections[asm_line.section].push_back(asm_line);
             }
+        } // end of else
+    } // end of while
 
-            sections[asm_line.section].push_back(asm_line);
-        }
-    }
-
-    //std::cout << "#### Reading file DONE! ####" << std::endl;
     std::cout << "#### Parsing ASM code DONE! ####" << std::endl;
 
     /* clean up */
@@ -422,6 +462,9 @@ int section2shell(std::string shell_file){
             std::string code_str;
             list2str(code_str, (*ci).line_code);
             shell_fp << code_str;
+            std::cout << (*ci).section << ":" << (*ci).function << ":" \
+                     << (*ci).line_num << ":" << code_str << ":" << (*ci).line_opt << ":" \
+                     << (*ci).reloc_type << ":" << (*ci).reloc_func << ":" << (*ci).reloc_offset << std::endl;
         }
     }
     shell_fp << "\"" << std::endl;
