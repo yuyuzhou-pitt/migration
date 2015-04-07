@@ -87,13 +87,11 @@ class ASMLine{
 std::map<std::string, int> reloc_map = {{"R_X86_64_32S", 1}, {"R_X86_64_PC32", 2}};
 /* record the section address pair, for callq offset calculation */
 std::map<int, std::string> section_map; //{{<section_id>, "<section>"}, ..}
-std::map<int, std::string>::iterator sec_map_it;
 /* record the function address pair, for callq offset calculation */
 std::map<std::string, std::list<int>> func_map; // {{"<function>", [<func_addr>, <section_id>]}, ..}
-std::map<std::string, std::list<int>>::iterator func_map_it;
+//std::map<std::string, std::list<int>>::iterator func_map_it;
 /* the section map for all the ASM lines */
 std::map<std::string, std::list<ASMLine>> sections;
-std::map<std::string, std::list<ASMLine>>::iterator sections_it;
 
 /* trim from start */
 static inline std::string &ltrim(std::string &s) {
@@ -149,13 +147,15 @@ int list2str(std::string &str, std::list<std::string> lst){
 int section_size(int section_id){
     /* p section_map: std::map with 5 elements
     *{[0] = ".init.text", [1] = ".text", [2] = ".rodata.str1.1", [3] = ".exit.text", [4] = ".comment"} */
-    sec_map_it = section_map.find(section_id); // got section name
+    std::map<int, std::string>::iterator sm_it;
+    sm_it = section_map.find(section_id); // got section name
 
     /* p sections std::map with 5 elements = 
     * {[".comment"] = std::list = {[0] = { <asm_line 0> }, [1] = { <asm_line 1> }, ... } 
     * [".rodata.str1.1"] = std::list = {[0] = { <asm_line 0> }, [1] = { <asm_line 1> }, ... */
-    sections_it = sections.find(sec_map_it->second); // got section content list
-    ASMLine tmp_line = (sections_it->second).back();
+    std::map<std::string, std::list<ASMLine>>::iterator sec_it;
+    sec_it = sections.find(sm_it->second); // got section content list
+    ASMLine tmp_line = (sec_it->second).back();
 
     /* 11:   20 4d 72 */
     return tmp_line.line_num + tmp_line.line_code.size();
@@ -313,7 +313,7 @@ int asm2section(std::string asm_file){
  * 3. offset = (step 2) + (line_num) + (target_section - (func_addr+reloc_offset))
  *   target_section = func_map[function][1]
  *   func_addr = func_map[function][0] */
-int calc_offset(ASMLine asm_line){
+int calc_offset(ASMLine &asm_line){
     int offset = 0;
     int offset_sign = 1; // positive
 
@@ -373,6 +373,7 @@ int update_offset(ASMLine &asm_line, int reloc_offset){
     stream << std::setfill ('0') << std::setw(8) << std::hex << reloc_offset;
     std::string hex_offset(stream.str());
 
+    //std::cout << "hex_offset:" << hex_offset << std::endl;
     /* write hex back to asm_line */
     int hex_i = 0;
     std::list<std::string> &code_list = asm_line.line_code;
@@ -400,13 +401,17 @@ int section2shell(std::string shell_file){
 
     std::cout << "#### Writing shellcode " << shell_file << " ####" << std::endl;
     shell_fp << "\"" ;
+    std::map<int, std::string>::iterator sec_map_it;
     for (sec_map_it = section_map.begin(); sec_map_it != section_map.end(); ++sec_map_it){
         std::cout << "Writing " << sec_map_it->second << "..." << std::endl;
 
-        std::list<ASMLine>::iterator ci;
+        /* got the section */
+        std::map<std::string, std::list<ASMLine>>::iterator sections_it;
+        sections_it = sections.find(sec_map_it->second);
 
         /*update the callq offset*/
-        for (ci = sections[sec_map_it->second].begin(); ci != sections[sec_map_it->second].end(); ++ci){
+        std::list<ASMLine>::iterator ci;
+        for (ci = (sections_it->second).begin(); ci != (sections_it->second).end(); ++ci){
             if ((*ci).reloc_type != 0){
                 update_offset(*std::prev(ci), calc_offset(*ci));
             }
@@ -441,8 +446,9 @@ int shell_length(std::string shell_file){
     shell_len_fp.open(shell_len);
 
     std::cout << "#### Writing shellcode length " << shell_file << ".length ####" << std::endl;
-    for (sec_map_it = section_map.begin(); sec_map_it != section_map.end(); ++sec_map_it){
-        shellcode_length += section_size(sec_map_it->first);
+    std::map<int, std::string>::iterator sec_it;
+    for (sec_it = section_map.begin(); sec_it != section_map.end(); ++sec_it){
+        shellcode_length += section_size(sec_it->first);
     }
     shell_len_fp << shellcode_length << std::endl;
     std::cout << "#### Writing shellcode length DONE! ####" << std::endl;
