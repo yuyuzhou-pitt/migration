@@ -32,6 +32,9 @@ static int __init hello_start(void)
 static void __exit hello_end(void)
 {
     char str2[20] = "Goodby Mr.\n";
+    printstr("Bye printk!\n");
+    printstr("I'm in .rodata.\n");
+    printstr("I'm still in .rodata.\n");
     printstr(str2);
 }
 module_init(hello_start);
