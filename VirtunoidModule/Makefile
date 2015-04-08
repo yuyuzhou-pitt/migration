@@ -1,23 +1,30 @@
+MODULE_NAME=virtunoid-module
+
 ifneq ($(KERNELRELEASE),)
-	obj-m := virtunoid-module.o
+	obj-m := $(MODULE_NAME).o
+	# filter function tracer: __fentry__
 	KBUILD_CFLAGS := $(filter-out -pg, $(KBUILD_CFLAGS))
+	# filter all the .debug_xxx sections
+	KBUILD_CFLAGS := $(filter-out -g, $(KBUILD_CFLAGS))
+	# do not check stack overflow : __stack_chk_fail-0x4
+	KBUILD_CFLAGS += -fno-stack-protector
 else
-	KDIR ?= ../src/linux-3.0/
+	KDIR ?= ~/undermining/src/linux-3.0/
 	PWD := $(shell pwd)
 
-all: hello initrd
+all: virtunoid initrd
 
-hello:
+virtunoid:
 	make -C $(KDIR) M=$(PWD) modules
 
 initrd:
 	mkdir -p out
-	cp hello.ko out/hello.ko
+	cp $(MODULE_NAME).ko out/virtunoid.ko
 	cp init out/init
 	chmod +x out/init
 	mkdir -p out/proc
 	mkdir -p out/bin
-	cp ../src/busybox-1.17.1/busybox out/bin/busybox
+	cp ~/undermining/src/busybox-1.17.1/busybox out/bin/busybox
 	ln -sf busybox out/bin/ls
 	ln -sf busybox out/bin/mknod
 	ln -sf busybox out/bin/mount
