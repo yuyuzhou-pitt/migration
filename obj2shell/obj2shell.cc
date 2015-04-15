@@ -45,6 +45,9 @@
 #include <locale>
 #include <iomanip>
 
+#define KERNEL_STACK 2170658888 // kernel_stack 0xffffffff8161a048
+#define DEBUG 1 // set 1 for debug info
+
 /* use a class to store each line */
 class ASMLine{
   public:
@@ -243,7 +246,9 @@ int asm2section(std::string asm_file){
         else if (line.find("000") == 0){
             split(line, ' ', line_list);
             std::string function_name = line_list.back().substr(1, line_list.back().length() - 3);
-            std::cout << line_list.front() << " " << function_name << std::endl;
+            if ( DEBUG == 1 ){
+                std::cout << line_list.front() << " " << function_name << std::endl;
+            }
 
             asm_line.func_addr = str2hex(line_list.front());
             asm_line.function = function_name;
@@ -326,7 +331,6 @@ int asm2section(std::string asm_file){
 
                 asm_line.reloc_func = reloc_func;
                 asm_line.reloc_offset = str2hex(reloc_offset);
-
                 /* ignore the offset -0x4 */
                 if ('-' == delim) {
                     asm_line.reloc_offset = 0;
@@ -386,9 +390,9 @@ int calc_offset(ASMLine &asm_line){
             offset += section_size(sec);
         }
         /* 3. offset = (step 2) + (line_num) + (target_section - (func_addr+reloc_offset)) */
-        /* if target section is above:
+        /* if target section is above (negative):
         * offset += (line_num + 4) + (target_section - (func_addr+reloc_offset)) 
-        * 4: address occupies 4 bytes*/
+        * +4: address occupies 4 bytes*/
         if (asm_line.section_id > target_section){
             offset_sign = -1; // negtive
             offset += (asm_line.line_num + 4) + \
@@ -396,10 +400,16 @@ int calc_offset(ASMLine &asm_line){
         }
         /* if target section is below:
         * offset += (this_section - (line_num + 4)) - (func_addr+reloc_offset)) 
-        * 4: address occupies 4 bytes*/
-        else{
+        * +4: address occupies 4 bytes*/
+        else if ( asm_line.section_id < target_section ) {
             offset += (section_size(asm_line.section_id) - (asm_line.line_num + 4)) + \
                 (target_func_addr + asm_line.reloc_offset);
+        }
+        /* the same section (no middle sections) */
+        else if ( asm_line.section_id == target_section ) {
+            /* offset += (target_func_addr+reloc_offset) - (line_num + 4)
+            * +4: address occupies 4 bytes*/
+            offset += (target_func_addr + asm_line.reloc_offset) - (asm_line.line_num + 4);
         }
 
         return offset_sign * offset;
@@ -439,7 +449,7 @@ int section2shell(std::string shell_file){
     std::ofstream shell_fp;
     shell_fp.open(shell_str);
 
-    std::cout << "#### Writing shellcode " << shell_file << " ####" << std::endl;
+    std::cout << "#### Writing shellcode string: " << shell_file << " ####" << std::endl;
     shell_fp << "\"" ;
     std::map<int, std::string>::iterator sec_map_it;
     for (sec_map_it = section_map.begin(); sec_map_it != section_map.end(); ++sec_map_it){
@@ -453,7 +463,14 @@ int section2shell(std::string shell_file){
         std::list<ASMLine>::iterator ci;
         for (ci = (sections_it->second).begin(); ci != (sections_it->second).end(); ++ci){
             if ((*ci).reloc_type != 0){
-                update_offset(*std::prev(ci), calc_offset(*ci));
+                /* for kernel_stack, provide absolute address defined in system.map */
+                if (((*ci).reloc_func == "kernel_stack")){
+                    update_offset(*std::prev(ci), KERNEL_STACK);
+                }
+                /* else, do the calculation */
+                else{
+                    update_offset(*std::prev(ci), calc_offset(*ci));
+                }
             }
         }
 
@@ -462,9 +479,11 @@ int section2shell(std::string shell_file){
             std::string code_str;
             list2str(code_str, (*ci).line_code);
             shell_fp << code_str;
-            std::cout << (*ci).section << ":" << (*ci).function << ":" \
+            if (DEBUG == 1){
+                std::cout << (*ci).section << ":" << (*ci).function << ":" \
                      << (*ci).line_num << ":" << code_str << ":" << (*ci).line_opt << ":" \
                      << (*ci).reloc_type << ":" << (*ci).reloc_func << ":" << (*ci).reloc_offset << std::endl;
+            }
         }
     }
     shell_fp << "\"" << std::endl;
@@ -488,7 +507,7 @@ int shell_length(std::string shell_file){
     std::ofstream shell_len_fp;
     shell_len_fp.open(shell_len);
 
-    std::cout << "#### Writing shellcode length " << shell_file << ".length ####" << std::endl;
+    std::cout << "#### Writing shellcode length: " << shell_file << ".length ####" << std::endl;
     std::map<int, std::string>::iterator sec_it;
     for (sec_it = section_map.begin(); sec_it != section_map.end(); ++sec_it){
         shellcode_length += section_size(sec_it->first);
