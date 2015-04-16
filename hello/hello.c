@@ -1,3 +1,30 @@
+/* virtunoid.c: qemu-kvm escape exploit, 0.13.51 <= qemu-kvm <= 0.14.50
+ *  by Nelson Elhage <nelhage@nelhage.com>
+ * 
+ * Exploits CVE-2011-1751, insufficient checks in PCI hotplug.
+ *
+ * The underlying bug exists since qemu-kvm 0.11.51, but this exploit
+ * uses features introduced in qemu-kvm 0.13.51. We choose to do this
+ * for simplicity, and in order to limit the scope of this exploit,
+ * since this is intended as a proof-of-concept.
+ *
+ * I presented on this bug at BlackHat/DEFCON 2011. Slides are
+ * available at <http://nelhage.com/talks/kvm-defcon-2011.pdf>, and
+ * include a detailed discussion of this exploit.
+ */
+
+/* Kernel module version of virtunoid
+ * By Yuyu Zhou.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * all copies or substantial portions of the Software.
+ */
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/in.h>
